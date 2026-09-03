@@ -53,17 +53,19 @@ def insert_commits(conn: sqlite3.Connection, repo_id: int, commits: list[CommitR
         conn.execute(
             """
             INSERT INTO commits (
-                repo_id, hash, author_name, author_email, author_date,
-                committer_name, committer_email, committer_date, message,
+                repo_id, hash, author_name, author_email, author_date, author_date_utc,
+                committer_name, committer_email, committer_date, committer_date_utc, message,
                 is_merge, parent_hashes, insertions, deletions, files_changed_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repo_id, hash) DO UPDATE SET
                 author_name=excluded.author_name,
                 author_email=excluded.author_email,
                 author_date=excluded.author_date,
+                author_date_utc=excluded.author_date_utc,
                 committer_name=excluded.committer_name,
                 committer_email=excluded.committer_email,
                 committer_date=excluded.committer_date,
+                committer_date_utc=excluded.committer_date_utc,
                 message=excluded.message,
                 is_merge=excluded.is_merge,
                 parent_hashes=excluded.parent_hashes,
@@ -77,9 +79,11 @@ def insert_commits(conn: sqlite3.Connection, repo_id: int, commits: list[CommitR
                 commit.author_name,
                 commit.author_email,
                 commit.author_date,
+                commit.author_date_utc,
                 commit.committer_name,
                 commit.committer_email,
                 commit.committer_date,
+                commit.committer_date_utc,
                 commit.message,
                 commit.is_merge,
                 ",".join(commit.parent_hashes),

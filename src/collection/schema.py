@@ -17,15 +17,25 @@ CREATE TABLE IF NOT EXISTS repositories (
     collected_at    TEXT NOT NULL
 );
 
+-- author_date/committer_date preserve the committer's original local UTC
+-- offset exactly as git recorded it (raw evidence). Those are NOT safe to
+-- ORDER BY directly across commits with different offsets — e.g.
+-- "10:21-03:00" sorts before "11:51+02:00" as plain text even though the
+-- second happened two hours *earlier* in absolute time (13:21 UTC vs
+-- 09:51 UTC). author_date_utc/committer_date_utc are the same instants
+-- normalized to UTC specifically so plain lexicographic ordering is always
+-- chronologically correct; use those two for any sorting/comparison.
 CREATE TABLE IF NOT EXISTS commits (
     repo_id              INTEGER NOT NULL REFERENCES repositories(id),
     hash                 TEXT NOT NULL,
     author_name          TEXT,
     author_email         TEXT,
     author_date          TEXT,
+    author_date_utc      TEXT,
     committer_name       TEXT,
     committer_email      TEXT,
     committer_date       TEXT,
+    committer_date_utc   TEXT,
     message              TEXT,
     is_merge             INTEGER NOT NULL DEFAULT 0,
     parent_hashes        TEXT,
@@ -34,6 +44,7 @@ CREATE TABLE IF NOT EXISTS commits (
     files_changed_count  INTEGER,
     PRIMARY KEY (repo_id, hash)
 );
+CREATE INDEX IF NOT EXISTS idx_commits_author_date_utc ON commits(repo_id, author_date_utc);
 
 CREATE TABLE IF NOT EXISTS commit_files (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

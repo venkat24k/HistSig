@@ -15,6 +15,23 @@ def test_collect_git_history_captures_author_identity(tmp_git_repo):
         assert commit.author_name == "Test Author"
         assert commit.author_email == "author@example.com"
         assert commit.author_date is not None
+        assert commit.author_date_utc is not None
+
+
+def test_collect_git_history_utc_dates_sort_correctly_across_offsets(tmp_git_repo):
+    """Regression test: author_date keeps each commit's original local UTC
+    offset, which does NOT sort correctly as plain text against a
+    different offset (e.g. "10:00-03:00" is textually before "09:00+02:00"
+    even though the second happened three hours earlier in absolute time).
+    author_date_utc must always sort correctly regardless of offset."""
+    import datetime
+
+    commits = collect_git_history(str(tmp_git_repo))
+    for commit in commits:
+        parsed_utc = datetime.datetime.fromisoformat(commit.author_date_utc)
+        assert parsed_utc.utcoffset() == datetime.timedelta(0)
+        parsed_original = datetime.datetime.fromisoformat(commit.author_date)
+        assert parsed_utc == parsed_original  # same instant, normalized offset
 
 
 def test_collect_git_history_captures_changed_files(tmp_git_repo):
@@ -29,6 +46,22 @@ def test_collect_git_history_captures_changed_files(tmp_git_repo):
     change_types = {f.filename: f.change_type for f in second_commit.files}
     assert change_types["a.txt"] == "MODIFY"
     assert change_types["b.txt"] == "ADD"
+
+
+def test_collect_git_history_uses_full_paths_not_basenames(tmp_git_repo_with_nested_rename):
+    """Regression test: PyDriller's mf.filename is only a basename, which
+    would make pkg_a/__init__.py and pkg_b/__init__.py indistinguishable
+    and wouldn't line up with old_path (a full path) for rename tracking."""
+    commits = collect_git_history(str(tmp_git_repo_with_nested_rename))
+    add_commit, rename_commit = commits
+
+    add_paths = {f.filename for f in add_commit.files}
+    assert add_paths == {"pkg_a/__init__.py", "pkg_b/__init__.py"}
+
+    rename_file = rename_commit.files[0]
+    assert rename_file.change_type == "RENAME"
+    assert rename_file.old_path == "pkg_a/__init__.py"
+    assert rename_file.filename == "pkg_a/core.py"
 
 
 def test_collect_git_history_is_not_merge_for_linear_history(tmp_git_repo):

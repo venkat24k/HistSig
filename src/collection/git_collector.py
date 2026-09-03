@@ -15,6 +15,7 @@ does that ourselves first, and PyDriller only ever operates on the resulting
 local path.
 """
 
+import datetime
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -42,9 +43,11 @@ class CommitRecord:
     author_name: str | None
     author_email: str | None
     author_date: str | None
+    author_date_utc: str | None
     committer_name: str | None
     committer_email: str | None
     committer_date: str | None
+    committer_date_utc: str | None
     message: str
     is_merge: bool
     parent_hashes: list[str]
@@ -92,6 +95,14 @@ def _looks_like_remote(path_to_repo: str) -> bool:
     return "://" in path_to_repo or path_to_repo.startswith("git@")
 
 
+def _to_posix(path: str | None) -> str | None:
+    return path.replace("\\", "/") if path is not None else None
+
+
+def _to_utc_isoformat(dt: datetime.datetime) -> str:
+    return dt.astimezone(datetime.timezone.utc).isoformat()
+
+
 def collect_git_history(path_to_repo: str, only_in_branch: str | None = None) -> list[CommitRecord]:
     """Traverse a repository's Git history and return one CommitRecord per commit.
 
@@ -115,8 +126,18 @@ def collect_git_history(path_to_repo: str, only_in_branch: str | None = None) ->
     for commit in Repository(path_to_repo, **kwargs).traverse_commits():
         files = [
             FileChangeRecord(
-                filename=mf.filename,
-                old_path=mf.old_path,
+                # mf.filename is only the basename (e.g. "__init__.py"),
+                # which collides across directories and doesn't line up
+                # with mf.old_path (a full path) for rename tracking. Use
+                # the full relative path on both sides instead: new_path
+                # for anything but a delete, old_path for a delete (where
+                # new_path is None). PyDriller returns these through
+                # pathlib.Path, which normalizes to OS-native separators —
+                # forced back to "/" here so the same repository produces
+                # identical raw data regardless of which OS the collector
+                # runs on (CLAUDE.md Section 13: reproducibility).
+                filename=_to_posix(mf.new_path if mf.new_path is not None else mf.old_path),
+                old_path=_to_posix(mf.old_path),
                 change_type=mf.change_type.name,
                 insertions=mf.added_lines,
                 deletions=mf.deleted_lines,
@@ -129,9 +150,11 @@ def collect_git_history(path_to_repo: str, only_in_branch: str | None = None) ->
                 author_name=commit.author.name,
                 author_email=commit.author.email,
                 author_date=commit.author_date.isoformat(),
+                author_date_utc=_to_utc_isoformat(commit.author_date),
                 committer_name=commit.committer.name,
                 committer_email=commit.committer.email,
                 committer_date=commit.committer_date.isoformat(),
+                committer_date_utc=_to_utc_isoformat(commit.committer_date),
                 message=commit.msg,
                 is_merge=commit.merge,
                 parent_hashes=list(commit.parents),
