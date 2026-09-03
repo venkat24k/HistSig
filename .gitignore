@@ -1,0 +1,34 @@
+# Environments
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+
+# Data (raw/processed/results are regenerable or too large for git)
+data/raw/*.db
+data/raw/*.sqlite
+data/raw/**/*.json
+data/raw/_clones/
+data/processed/**
+data/results/**
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/results/.gitkeep
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Notebooks checkpoints
+.ipynb_checkpoints/

@@ -1,0 +1,12 @@
+# Stage 1 — repository collection
+pydriller>=2.6
+requests>=2.31
+python-dotenv>=1.0
+
+# Testing (all stages)
+pytest>=8.0
+
+# Added in later stages as needed (Pandas/NumPy for feature extraction,
+# SciPy/scikit-learn/statsmodels for evaluation, FastAPI/neo4j-driver for
+# later stages) — not installed yet per CLAUDE.md: no dependency without
+# a current, concrete reason.
