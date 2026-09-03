@@ -37,6 +37,17 @@ def upsert_repository(conn: sqlite3.Connection, url: str, name: str, default_bra
     return cur.lastrowid
 
 
+def _replace_children(conn: sqlite3.Connection, delete_sql: str, delete_params: tuple, insert_sql: str, rows: list[tuple]) -> None:
+    """Child tables (commit_files, issue_comments, pr_reviews, ...) have a
+    surrogate id rather than a natural key, so idempotency is handled by
+    clearing a parent's existing child rows before re-inserting — shared
+    here since every entity with child tables repeated this same two-step
+    pattern independently."""
+    conn.execute(delete_sql, delete_params)
+    if rows:
+        conn.executemany(insert_sql, rows)
+
+
 def insert_commits(conn: sqlite3.Connection, repo_id: int, commits: list[CommitRecord]) -> None:
     for commit in commits:
         conn.execute(
@@ -70,7 +81,7 @@ def insert_commits(conn: sqlite3.Connection, repo_id: int, commits: list[CommitR
                 commit.committer_email,
                 commit.committer_date,
                 commit.message,
-                int(commit.is_merge),
+                commit.is_merge,
                 ",".join(commit.parent_hashes),
                 commit.insertions,
                 commit.deletions,
@@ -78,22 +89,14 @@ def insert_commits(conn: sqlite3.Connection, repo_id: int, commits: list[CommitR
             ),
         )
 
-        # commit_files has a surrogate id (no natural unique key across
-        # renames/duplicated filenames within a commit), so idempotency is
-        # handled by clearing this commit's file rows before re-inserting.
-        conn.execute(
-            "DELETE FROM commit_files WHERE repo_id = ? AND commit_hash = ?",
-            (repo_id, commit.hash),
-        )
-        conn.executemany(
+        _replace_children(
+            conn,
+            "DELETE FROM commit_files WHERE repo_id = ? AND commit_hash = ?", (repo_id, commit.hash),
             """
             INSERT INTO commit_files (repo_id, commit_hash, filename, old_path, change_type, insertions, deletions)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (repo_id, commit.hash, f.filename, f.old_path, f.change_type, f.insertions, f.deletions)
-                for f in commit.files
-            ],
+            [(repo_id, commit.hash, f.filename, f.old_path, f.change_type, f.insertions, f.deletions) for f in commit.files],
         )
     conn.commit()
 
@@ -112,17 +115,18 @@ def insert_issues(conn: sqlite3.Connection, repo_id: int, issues: list[IssueReco
             """,
             (issue.id, repo_id, issue.number, issue.title, issue.body, issue.state,
              issue.author_login, issue.created_at, issue.closed_at, issue.updated_at,
-             int(issue.comments_truncated)),
+             issue.comments_truncated),
         )
 
-        conn.execute("DELETE FROM issue_labels WHERE issue_id = ?", (issue.id,))
-        conn.executemany(
+        _replace_children(
+            conn,
+            "DELETE FROM issue_labels WHERE issue_id = ?", (issue.id,),
             "INSERT INTO issue_labels (issue_id, label) VALUES (?, ?)",
             [(issue.id, label) for label in issue.labels],
         )
-
-        conn.execute("DELETE FROM issue_comments WHERE issue_id = ?", (issue.id,))
-        conn.executemany(
+        _replace_children(
+            conn,
+            "DELETE FROM issue_comments WHERE issue_id = ?", (issue.id,),
             "INSERT INTO issue_comments (id, issue_id, author_login, created_at, body) VALUES (?, ?, ?, ?, ?)",
             [(c.id, issue.id, c.author_login, c.created_at, c.body) for c in issue.comments],
         )
@@ -136,47 +140,51 @@ def insert_pull_requests(conn: sqlite3.Connection, repo_id: int, pull_requests: 
             INSERT INTO pull_requests (
                 id, repo_id, number, title, body, state, author_login, created_at,
                 merged_at, closed_at, updated_at, base_branch, head_branch, merge_commit_sha,
-                reviews_truncated, commits_truncated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reviews_truncated, commits_truncated, review_comments_truncated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, body=excluded.body, state=excluded.state,
                 author_login=excluded.author_login, created_at=excluded.created_at,
                 merged_at=excluded.merged_at, closed_at=excluded.closed_at, updated_at=excluded.updated_at,
                 base_branch=excluded.base_branch, head_branch=excluded.head_branch,
                 merge_commit_sha=excluded.merge_commit_sha,
-                reviews_truncated=excluded.reviews_truncated, commits_truncated=excluded.commits_truncated
+                reviews_truncated=excluded.reviews_truncated, commits_truncated=excluded.commits_truncated,
+                review_comments_truncated=excluded.review_comments_truncated
             """,
             (pr.id, repo_id, pr.number, pr.title, pr.body, pr.state, pr.author_login, pr.created_at,
              pr.merged_at, pr.closed_at, pr.updated_at, pr.base_branch, pr.head_branch, pr.merge_commit_sha,
-             int(pr.reviews_truncated), int(pr.commits_truncated)),
+             pr.reviews_truncated, pr.commits_truncated, pr.review_comments_truncated),
         )
 
-        conn.execute("DELETE FROM pr_labels WHERE pr_id = ?", (pr.id,))
-        conn.executemany(
+        _replace_children(
+            conn,
+            "DELETE FROM pr_labels WHERE pr_id = ?", (pr.id,),
             "INSERT INTO pr_labels (pr_id, label) VALUES (?, ?)",
             [(pr.id, label) for label in pr.labels],
         )
-
-        conn.execute("DELETE FROM pr_commits WHERE pr_id = ?", (pr.id,))
-        conn.executemany(
+        _replace_children(
+            conn,
+            "DELETE FROM pr_commits WHERE pr_id = ?", (pr.id,),
             "INSERT INTO pr_commits (pr_id, commit_hash) VALUES (?, ?)",
             [(pr.id, sha) for sha in pr.commit_shas],
         )
-
+        # pr_review_comments references pr_reviews via review_id, so child
+        # rows are cleared before the reviews they point to.
         conn.execute("DELETE FROM pr_review_comments WHERE pr_id = ?", (pr.id,))
-        conn.execute("DELETE FROM pr_reviews WHERE pr_id = ?", (pr.id,))
-        conn.executemany(
+        _replace_children(
+            conn,
+            "DELETE FROM pr_reviews WHERE pr_id = ?", (pr.id,),
             "INSERT INTO pr_reviews (id, pr_id, reviewer_login, state, submitted_at, body) VALUES (?, ?, ?, ?, ?, ?)",
             [(r.id, pr.id, r.reviewer_login, r.state, r.submitted_at, r.body) for r in pr.reviews],
         )
-        conn.executemany(
-            """
-            INSERT INTO pr_review_comments (id, pr_id, review_id, author_login, created_at, body, path)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [(rc.id, pr.id, rc.review_id, rc.author_login, rc.created_at, rc.body, rc.path)
-             for rc in pr.review_comments],
-        )
+        if pr.review_comments:
+            conn.executemany(
+                """
+                INSERT INTO pr_review_comments (id, pr_id, review_id, author_login, created_at, body, path)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [(rc.id, pr.id, rc.review_id, rc.author_login, rc.created_at, rc.body, rc.path) for rc in pr.review_comments],
+            )
     conn.commit()
 
 

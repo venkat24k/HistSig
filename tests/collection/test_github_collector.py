@@ -118,7 +118,7 @@ def test_collect_pull_requests_includes_reviews_and_review_comments_and_commits(
             {
                 "databaseId": 1, "author": _user("reviewer1"), "state": "APPROVED",
                 "submittedAt": "2024-01-02T00:00:00Z", "body": "lgtm",
-                "comments": {"nodes": [
+                "comments": {"totalCount": 1, "nodes": [
                     {"databaseId": 2, "author": _user("reviewer1"), "createdAt": "2024-01-02T00:00:00Z",
                      "body": "nit: rename this", "path": "src/foo.py"}
                 ]},
@@ -145,6 +145,7 @@ def test_collect_pull_requests_includes_reviews_and_review_comments_and_commits(
     assert record.review_comments[0].path == "src/foo.py"
     assert record.review_comments[0].review_id == 1
     assert record.reviews_truncated is False
+    assert record.review_comments_truncated is False
 
 
 def test_collect_releases():

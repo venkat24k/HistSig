@@ -12,7 +12,9 @@ idempotent).
 
 import argparse
 import os
+import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -30,13 +32,18 @@ from src.collection.github_collector import (
 from src.collection.schema import connect
 from src.collection.storage import insert_commits, insert_issues, insert_pull_requests, insert_releases, upsert_repository
 
+# Matches the owner/repo segment right after "github.com" for both HTTPS
+# (https://github.com/owner/repo[.git][/]) and SSH (git@github.com:owner/repo.git)
+# URLs, and ignores anything after it (e.g. a browser-pasted
+# .../owner/repo/tree/main URL) rather than silently misparsing it.
+_GITHUB_URL_RE = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?(?:/|$)")
+
 
 def parse_owner_repo(url: str) -> str:
-    """'https://github.com/owner/repo' or '.../repo.git' -> 'owner/repo'."""
-    path = url.rstrip("/")
-    if path.endswith(".git"):
-        path = path[: -len(".git")]
-    return "/".join(path.split("/")[-2:])
+    match = _GITHUB_URL_RE.search(url.strip())
+    if not match:
+        raise ValueError(f"Could not parse an owner/repo from {url!r} — expected a github.com HTTPS or SSH URL.")
+    return f"{match.group(1)}/{match.group(2)}"
 
 
 def main() -> None:
@@ -62,25 +69,33 @@ def main() -> None:
     print(f"Cloning/updating local mirror of {owner_repo} at {clone_dir}...")
     local_path = ensure_local_clone(repo_meta["clone_url"], str(clone_dir))
 
-    print(f"Collecting Git history for {owner_repo}...")
-    commits = collect_git_history(local_path, only_in_branch=args.branch)
-    insert_commits(conn, repo_id, commits)
-    print(f"  {len(commits)} commits")
+    # Git history (local, subprocess/CPU-bound) and the three GraphQL
+    # collectors (network-bound, independent of each other and of the git
+    # walk) have no data dependency on one another, so they run concurrently
+    # rather than paying the sum of four sequential stages. Each collector
+    # still does its own internal pagination sequentially; only these four
+    # top-level stages overlap. Database writes stay on the main thread
+    # (sqlite3 connections aren't safe to share across threads) — each
+    # insert runs only after its collector has fully returned.
+    print(f"Collecting commits, issues, pull requests, and releases for {owner_repo}...")
+    collectors = {
+        "commits": lambda: collect_git_history(local_path, only_in_branch=args.branch),
+        "issues": lambda: collect_issues(session, owner_repo),
+        "pull_requests": lambda: collect_pull_requests(session, owner_repo),
+        "releases": lambda: collect_releases(session, owner_repo),
+    }
+    with ThreadPoolExecutor(max_workers=len(collectors)) as pool:
+        futures = {name: pool.submit(fn) for name, fn in collectors.items()}
+        results = {name: future.result() for name, future in futures.items()}
 
-    print(f"Collecting issues for {owner_repo}...")
-    issues = collect_issues(session, owner_repo)
-    insert_issues(conn, repo_id, issues)
-    print(f"  {len(issues)} issues")
-
-    print(f"Collecting pull requests for {owner_repo}...")
-    pull_requests = collect_pull_requests(session, owner_repo)
-    insert_pull_requests(conn, repo_id, pull_requests)
-    print(f"  {len(pull_requests)} pull requests")
-
-    print(f"Collecting releases for {owner_repo}...")
-    releases = collect_releases(session, owner_repo)
-    insert_releases(conn, repo_id, releases)
-    print(f"  {len(releases)} releases")
+    insert_commits(conn, repo_id, results["commits"])
+    print(f"  {len(results['commits'])} commits")
+    insert_issues(conn, repo_id, results["issues"])
+    print(f"  {len(results['issues'])} issues")
+    insert_pull_requests(conn, repo_id, results["pull_requests"])
+    print(f"  {len(results['pull_requests'])} pull requests")
+    insert_releases(conn, repo_id, results["releases"])
+    print(f"  {len(results['releases'])} releases")
 
     print(f"Done. Raw evidence stored in {args.db_path}")
 

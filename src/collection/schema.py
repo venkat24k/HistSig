@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     merge_commit_sha  TEXT,
     reviews_truncated INTEGER NOT NULL DEFAULT 0,
     commits_truncated INTEGER NOT NULL DEFAULT 0,
+    review_comments_truncated INTEGER NOT NULL DEFAULT 0,
     UNIQUE(repo_id, number)
 );
 

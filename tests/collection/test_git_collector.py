@@ -50,12 +50,15 @@ def test_ensure_local_clone_clones_when_missing(tmp_git_repo, tmp_path):
     assert collect_git_history(result_path) == collect_git_history(str(tmp_git_repo))
 
 
-def test_ensure_local_clone_fetches_when_already_present(tmp_git_repo, tmp_path):
+def test_ensure_local_clone_fetches_and_updates_local_branch_when_already_present(tmp_git_repo, tmp_path):
+    """A second call must pick up commits made on the "remote" since the
+    first clone — plain `git fetch` alone would update only the
+    remote-tracking ref, leaving the checked-out branch (and therefore what
+    PyDriller walks) stale; ensure_local_clone resets it to match."""
     clone_dir = tmp_path / "mirror"
     ensure_local_clone(str(tmp_git_repo), str(clone_dir))
     initial_commit_count = len(collect_git_history(str(clone_dir)))
 
-    # New commit on the "remote" after the first clone.
     (tmp_git_repo / "c.txt").write_text("third file\n")
     import subprocess
     subprocess.run(["git", "-C", str(tmp_git_repo), "add", "c.txt"], check=True)
@@ -64,10 +67,13 @@ def test_ensure_local_clone_fetches_when_already_present(tmp_git_repo, tmp_path)
     ensure_local_clone(str(tmp_git_repo), str(clone_dir))
 
     updated_commits = collect_git_history(str(clone_dir))
-    assert len(updated_commits) == initial_commit_count  # fetch alone doesn't move the checked-out branch
-    # but the new commit is now reachable in the local mirror's refs:
-    log = subprocess.run(
-        ["git", "-C", str(clone_dir), "log", "--all", "--oneline"],
-        check=True, capture_output=True, text=True,
-    )
-    assert "Add c.txt" in log.stdout
+    assert len(updated_commits) == initial_commit_count + 1
+    assert updated_commits[-1].message.strip() == "Add c.txt"
+
+
+def test_collect_git_history_rejects_remote_looking_urls():
+    import pytest
+    with pytest.raises(ValueError, match="local path"):
+        collect_git_history("https://github.com/pallets/click")
+    with pytest.raises(ValueError, match="local path"):
+        collect_git_history("git@github.com:pallets/click.git")

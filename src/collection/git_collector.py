@@ -59,11 +59,24 @@ def ensure_local_clone(remote_url: str, clone_dir: str, timeout_seconds: int = 3
     updates into the existing clone. Returns `clone_dir`. Safe to call
     repeatedly (re-running collection only pays for a fetch, not a full
     re-clone).
+
+    On an existing clone, `git fetch` alone updates the remote-tracking refs
+    (`origin/<branch>`) but leaves the locally checked-out branch — and
+    therefore `HEAD`, which is what PyDriller walks by default — exactly
+    where it was. Without the `reset --hard @{u}` below, re-running
+    collection against a repository that gained new commits since the first
+    clone would silently return the same, now-stale commit list every time,
+    which defeats the entire point of a "safe to re-run and stay current"
+    collector.
     """
     clone_path = Path(clone_dir)
     if (clone_path / ".git").exists():
         subprocess.run(
             ["git", "-C", str(clone_path), "fetch", "--all", "--tags", "--quiet"],
+            check=True, timeout=timeout_seconds, env=_GIT_ENV,
+        )
+        subprocess.run(
+            ["git", "-C", str(clone_path), "reset", "--hard", "--quiet", "@{u}"],
             check=True, timeout=timeout_seconds, env=_GIT_ENV,
         )
     else:
@@ -75,13 +88,25 @@ def ensure_local_clone(remote_url: str, clone_dir: str, timeout_seconds: int = 3
     return str(clone_path)
 
 
+def _looks_like_remote(path_to_repo: str) -> bool:
+    return "://" in path_to_repo or path_to_repo.startswith("git@")
+
+
 def collect_git_history(path_to_repo: str, only_in_branch: str | None = None) -> list[CommitRecord]:
     """Traverse a repository's Git history and return one CommitRecord per commit.
 
     `path_to_repo` must be a local path (see module docstring for why remote
     URLs aren't accepted directly) — use `ensure_local_clone` first for a
-    remote repository.
+    remote repository. A remote-looking argument raises immediately rather
+    than being handed to PyDriller, which was observed to hang indefinitely
+    instead of failing on one (see module docstring).
     """
+    if _looks_like_remote(path_to_repo):
+        raise ValueError(
+            f"collect_git_history requires a local path, got what looks like a remote URL: {path_to_repo!r}. "
+            "Call ensure_local_clone(remote_url, clone_dir) first and pass its return value here instead."
+        )
+
     kwargs = {}
     if only_in_branch:
         kwargs["only_in_branch"] = only_in_branch

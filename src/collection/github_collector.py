@@ -61,69 +61,78 @@ def get_session(token: str, pool_size: int = 16) -> requests.Session:
     return session
 
 
+_RETRYABLE_STATUSES = (403, 429, 500, 502, 503, 504)
+
+
 def _send_request(session: requests.Session, method: str, url: str, *, params=None, json=None, max_retries: int = 6) -> requests.Response:
     """Shared REST/GraphQL request path with rate-limit-aware backoff:
     - secondary abuse detection: 403/429 with a `Retry-After` header -> sleep that long.
     - primary quota exhausted: `X-RateLimit-Remaining: 0` with `X-RateLimit-Reset` -> sleep until reset.
-    - anything else transient (connection errors, other 403/429) -> capped exponential backoff.
+    - anything else transient (connection errors, other 403/429, 5xx) -> capped exponential backoff.
+
+    Each attempt raises (or returns) from its *own* current result rather than
+    remembering state across iterations — an earlier version stashed the first
+    exception seen and re-raised that stale error after the retry budget ran
+    out, even when a later attempt had gotten a real, more informative
+    response back.
     """
-    last_exc = None
     for attempt in range(max_retries):
+        is_last_attempt = attempt == max_retries - 1
         try:
             resp = session.request(method, url, params=params, json=json, timeout=30)
-        except requests.RequestException as exc:
-            last_exc = exc
+        except requests.RequestException:
+            if is_last_attempt:
+                raise
             time.sleep(min(2**attempt, 15))
             continue
 
-        if resp.status_code in (403, 429):
+        if resp.status_code in _RETRYABLE_STATUSES:
+            if is_last_attempt:
+                resp.raise_for_status()
             retry_after = resp.headers.get("Retry-After")
             remaining = resp.headers.get("X-RateLimit-Remaining")
             reset_at = resp.headers.get("X-RateLimit-Reset")
             if retry_after:
                 time.sleep(int(retry_after) + 1)
-                continue
-            if remaining == "0" and reset_at:
+            elif remaining == "0" and reset_at:
                 wait = max(int(reset_at) - time.time(), 1) + 2
                 time.sleep(min(wait, 3600))
-                continue
-            time.sleep(min(2**attempt, 30))
+            else:
+                time.sleep(min(2**attempt, 30))
             continue
 
         resp.raise_for_status()
         return resp
 
-    if last_exc:
-        raise last_exc
-    resp.raise_for_status()
-    return resp
+    raise AssertionError("unreachable: loop above always returns or raises on its last iteration")
 
 
 def _request(session: requests.Session, url: str, params: dict | None = None) -> requests.Response:
     return _send_request(session, "GET", url, params=params)
 
 
-def _paginate(session: requests.Session, url: str, params: dict | None = None):
-    params = dict(params or {})
-    params.setdefault("per_page", 100)
-    page = 1
-    while True:
-        params["page"] = page
-        data = _request(session, url, params=params).json()
-        if not data:
-            return
-        yield from data
-        if len(data) < params["per_page"]:
-            return
-        page += 1
-
-
-def _graphql(session: requests.Session, query: str, variables: dict) -> dict:
-    resp = _send_request(session, "POST", GRAPHQL_URL, json={"query": query, "variables": variables})
-    payload = resp.json()
-    if payload.get("errors") and not payload.get("data"):
-        raise RuntimeError(f"GitHub GraphQL error: {payload['errors']}")
-    return payload["data"]
+def _graphql(session: requests.Session, query: str, variables: dict, max_retries: int = 6) -> dict:
+    """GitHub signals GraphQL rate/complexity-limit exhaustion inside an HTTP
+    200 response (`errors: [{"type": "RATE_LIMITED", ...}]`, `data: null`),
+    not via a 403/429 status — so that case is handled here, on top of
+    `_send_request`'s transport-level retries, rather than being missed
+    entirely. Any other GraphQL error (bad owner/repo, revoked access, etc.)
+    raises immediately with the actual error detail, instead of returning a
+    partial `data` dict (e.g. `{"repository": None}`) that would otherwise
+    fail confusingly deep inside pagination.
+    """
+    for attempt in range(max_retries):
+        resp = _send_request(session, "POST", GRAPHQL_URL, json={"query": query, "variables": variables})
+        payload = resp.json()
+        errors = payload.get("errors")
+        if errors:
+            is_rate_limited = any(e.get("type") == "RATE_LIMITED" for e in errors)
+            if is_rate_limited and attempt < max_retries - 1:
+                time.sleep(min(5 * 2**attempt, 60))
+                continue
+            raise RuntimeError(f"GitHub GraphQL error: {errors}")
+        return payload["data"]
+    raise AssertionError("unreachable: loop above always returns or raises on its last iteration")
 
 
 def _graphql_paginate(session: requests.Session, query: str, variables: dict, connection_path: tuple[str, ...]):
@@ -207,6 +216,7 @@ class PullRequestRecord:
     review_comments: list[PRReviewCommentRecord] = field(default_factory=list)
     reviews_truncated: bool = False
     commits_truncated: bool = False
+    review_comments_truncated: bool = False
 
 
 @dataclass
@@ -279,6 +289,7 @@ query($owner: String!, $name: String!, $pageSize: Int!, $reviewsPageSize: Int!, 
             submittedAt
             body
             comments(first: $reviewCommentsPageSize) {
+              totalCount
               nodes { databaseId author { login } createdAt body path }
             }
           }
@@ -353,6 +364,7 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
     for raw in _graphql_paginate(session, _PULL_REQUESTS_QUERY, variables, ("repository", "pullRequests")):
         reviews: list[PRReviewRecord] = []
         review_comments: list[PRReviewCommentRecord] = []
+        review_comments_truncated = False
         for r in raw["reviews"]["nodes"]:
             reviews.append(
                 PRReviewRecord(
@@ -374,6 +386,8 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
                 )
                 for c in r["comments"]["nodes"]
             )
+            if r["comments"]["totalCount"] > len(r["comments"]["nodes"]):
+                review_comments_truncated = True
         records.append(
             PullRequestRecord(
                 id=raw["databaseId"],
@@ -395,6 +409,7 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
                 review_comments=review_comments,
                 reviews_truncated=raw["reviews"]["totalCount"] > len(reviews),
                 commits_truncated=raw["commits"]["totalCount"] > len(raw["commits"]["nodes"]),
+                review_comments_truncated=review_comments_truncated,
             )
         )
     return records
