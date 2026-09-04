@@ -144,8 +144,8 @@ def insert_pull_requests(conn: sqlite3.Connection, repo_id: int, pull_requests: 
             INSERT INTO pull_requests (
                 id, repo_id, number, title, body, state, author_login, created_at,
                 merged_at, closed_at, updated_at, base_branch, head_branch, merge_commit_sha,
-                reviews_truncated, commits_truncated, review_comments_truncated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reviews_truncated, commits_truncated, review_comments_truncated, comments_truncated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, body=excluded.body, state=excluded.state,
                 author_login=excluded.author_login, created_at=excluded.created_at,
@@ -153,11 +153,11 @@ def insert_pull_requests(conn: sqlite3.Connection, repo_id: int, pull_requests: 
                 base_branch=excluded.base_branch, head_branch=excluded.head_branch,
                 merge_commit_sha=excluded.merge_commit_sha,
                 reviews_truncated=excluded.reviews_truncated, commits_truncated=excluded.commits_truncated,
-                review_comments_truncated=excluded.review_comments_truncated
+                review_comments_truncated=excluded.review_comments_truncated, comments_truncated=excluded.comments_truncated
             """,
             (pr.id, repo_id, pr.number, pr.title, pr.body, pr.state, pr.author_login, pr.created_at,
              pr.merged_at, pr.closed_at, pr.updated_at, pr.base_branch, pr.head_branch, pr.merge_commit_sha,
-             pr.reviews_truncated, pr.commits_truncated, pr.review_comments_truncated),
+             pr.reviews_truncated, pr.commits_truncated, pr.review_comments_truncated, pr.comments_truncated),
         )
 
         _replace_children(
@@ -189,6 +189,12 @@ def insert_pull_requests(conn: sqlite3.Connection, repo_id: int, pull_requests: 
                 """,
                 [(rc.id, pr.id, rc.review_id, rc.author_login, rc.created_at, rc.body, rc.path) for rc in pr.review_comments],
             )
+        _replace_children(
+            conn,
+            "DELETE FROM pr_comments WHERE pr_id = ?", (pr.id,),
+            "INSERT INTO pr_comments (id, pr_id, author_login, created_at, body) VALUES (?, ?, ?, ?, ?)",
+            [(c.id, pr.id, c.author_login, c.created_at, c.body) for c in pr.comments],
+        )
     conn.commit()
 
 

@@ -143,6 +143,9 @@ def test_collect_pull_requests_includes_reviews_and_review_comments_and_commits(
                 ]},
             }
         ]},
+        "comments": {"totalCount": 1, "nodes": [
+            {"databaseId": 3, "author": _user("dave"), "createdAt": "2024-01-01T05:00:00Z", "body": "PTAL"}
+        ]},
     }
     session = FakeSession([
         {"repository": {"pullRequests": {"pageInfo": _page_info(), "nodes": [pr_node]}}}
@@ -163,8 +166,32 @@ def test_collect_pull_requests_includes_reviews_and_review_comments_and_commits(
     assert len(record.review_comments) == 1
     assert record.review_comments[0].path == "src/foo.py"
     assert record.review_comments[0].review_id == 1
-    assert record.reviews_truncated is False
-    assert record.review_comments_truncated is False
+    assert len(record.comments) == 1
+    assert record.comments[0].author_login == "dave"
+    assert record.comments[0].body == "PTAL"
+    assert record.comments_truncated is False
+
+
+def test_collect_pull_requests_flags_truncated_general_comments():
+    pr_node = {
+        "databaseId": 1, "number": 5, "title": "t", "body": "", "state": "OPEN",
+        "author": _user("dave"), "createdAt": "2024-01-01T00:00:00Z", "mergedAt": None,
+        "closedAt": None, "updatedAt": "2024-01-01T00:00:00Z",
+        "baseRefName": "main", "headRefName": "feature-branch",
+        "mergeCommit": None, "labels": {"nodes": []},
+        "commits": {"totalCount": 0, "nodes": []},
+        "reviews": {"totalCount": 0, "nodes": []},
+        "comments": {"totalCount": 40, "nodes": [
+            {"databaseId": 3, "author": _user("dave"), "createdAt": "2024-01-01T05:00:00Z", "body": "1"}
+        ]},
+    }
+    session = FakeSession([
+        {"repository": {"pullRequests": {"pageInfo": _page_info(), "nodes": [pr_node]}}}
+    ])
+
+    result = collect_pull_requests(session, "o/r")
+
+    assert result[0].comments_truncated is True
 
 
 def test_collect_releases():

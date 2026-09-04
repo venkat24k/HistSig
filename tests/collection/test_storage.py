@@ -4,6 +4,7 @@ from src.collection.git_collector import CommitRecord, FileChangeRecord
 from src.collection.github_collector import (
     IssueCommentRecord,
     IssueRecord,
+    PRCommentRecord,
     PRReviewCommentRecord,
     PRReviewRecord,
     PullRequestRecord,
@@ -116,6 +117,7 @@ def _sample_pr(title="Add feature"):
             PRReviewCommentRecord(id=1, review_id=1, author_login="reviewer1",
                                    created_at=None, body="nit", path="src/foo.py")
         ],
+        comments=[PRCommentRecord(id=1, author_login="dave", created_at=None, body="PTAL")],
     )
 
 
@@ -132,6 +134,7 @@ def test_insert_pull_requests_is_idempotent_across_all_child_tables():
     assert conn.execute("SELECT COUNT(*) FROM pr_commits WHERE pr_id = 1").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM pr_reviews WHERE pr_id = 1").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM pr_review_comments WHERE pr_id = 1").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM pr_comments WHERE pr_id = 1").fetchone()[0] == 1
 
 
 def test_insert_releases_is_idempotent():

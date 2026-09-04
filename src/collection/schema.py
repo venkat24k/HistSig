@@ -107,7 +107,19 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     reviews_truncated INTEGER NOT NULL DEFAULT 0,
     commits_truncated INTEGER NOT NULL DEFAULT 0,
     review_comments_truncated INTEGER NOT NULL DEFAULT 0,
+    comments_truncated INTEGER NOT NULL DEFAULT 0,
     UNIQUE(repo_id, number)
+);
+
+-- General PR conversation comments — distinct from pr_review_comments
+-- (inline code-review comments) and issue_comments (real issues). GitHub
+-- exposes this as the PR's own top-level `comments` connection.
+CREATE TABLE IF NOT EXISTS pr_comments (
+    id            INTEGER PRIMARY KEY,
+    pr_id         INTEGER NOT NULL REFERENCES pull_requests(id),
+    author_login  TEXT,
+    created_at    TEXT,
+    body          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pr_commits (
