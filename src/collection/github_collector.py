@@ -31,6 +31,7 @@ returning canned JSON — see tests/collection/test_github_collector.py — so
 no live network access or GitHub-specific mocking library is needed.
 """
 
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -38,6 +39,19 @@ import requests
 
 API_BASE = "https://api.github.com"
 GRAPHQL_URL = f"{API_BASE}/graphql"
+
+# Matches the owner/repo segment right after "github.com" for both HTTPS
+# (https://github.com/owner/repo[.git][/]) and SSH (git@github.com:owner/repo.git)
+# URLs, and ignores anything after it (e.g. a browser-pasted
+# .../owner/repo/tree/main URL) rather than silently misparsing it.
+_GITHUB_URL_RE = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?(?:/|$)")
+
+
+def parse_owner_repo(url: str) -> str:
+    match = _GITHUB_URL_RE.search(url.strip())
+    if not match:
+        raise ValueError(f"Could not parse an owner/repo from {url!r} — expected a github.com HTTPS or SSH URL.")
+    return f"{match.group(1)}/{match.group(2)}"
 
 _ISSUE_PAGE_SIZE = 50
 _ISSUE_COMMENTS_PER_PAGE = 100

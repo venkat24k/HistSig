@@ -1,0 +1,184 @@
+@import "tailwindcss";
+
+/* Digital Ghost design tokens — a dark "forensic archive" palette:
+   near-black slate ground, cool cyan for signal/present evidence,
+   violet for the historical/salience axis, amber for attention. */
+:root {
+  --ink-900: #07070c;
+  --ink-850: #0b0b13;
+  --ink-800: #101019;
+  --ink-750: #14141f;
+  --ink-700: #1b1b28;
+  --line: #262636;
+  --line-soft: #1d1d2a;
+
+  --fg: #e9e9f2;
+  --fg-dim: #a3a3b8;
+  --fg-faint: #6e6e85;
+
+  --cyan: #67e8f9;
+  --cyan-deep: #22d3ee;
+  --violet: #c4b5fd;
+  --violet-deep: #a78bfa;
+  --amber: #fcd34d;
+  --green: #6ee7b7;
+  --red: #fca5a5;
+}
+
+@theme inline {
+  --color-ink-900: var(--ink-900);
+  --color-ink-850: var(--ink-850);
+  --color-ink-800: var(--ink-800);
+  --color-ink-750: var(--ink-750);
+  --color-ink-700: var(--ink-700);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-fg: var(--fg);
+  --color-fg-dim: var(--fg-dim);
+  --color-fg-faint: var(--fg-faint);
+  --color-cyan: var(--cyan);
+  --color-cyan-deep: var(--cyan-deep);
+  --color-violet: var(--violet);
+  --color-violet-deep: var(--violet-deep);
+  --color-amber: var(--amber);
+  --color-green: var(--green);
+  --color-red: var(--red);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html,
+body {
+  background: var(--ink-900);
+  color: var(--fg);
+}
+
+body {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Ambient color grading: two soft chromatic pools fixed behind all content,
+   so scrolling reveals a subtle shifting wash rather than flat black. */
+.ambient-grade::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(60rem 40rem at 12% -10%, rgba(34, 211, 238, 0.09), transparent 60%),
+    radial-gradient(50rem 36rem at 92% 8%, rgba(167, 139, 250, 0.08), transparent 60%),
+    radial-gradient(70rem 50rem at 50% 108%, rgba(34, 211, 238, 0.05), transparent 65%);
+}
+
+/* Fine grain keeps the large dark fields from banding on cheap panels. */
+.ambient-grade::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.16;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+
+.text-gradient {
+  background: linear-gradient(100deg, var(--fg) 10%, var(--cyan) 52%, var(--violet) 92%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.008));
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  backdrop-filter: blur(8px);
+}
+
+.panel-hover {
+  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+.panel-hover:hover {
+  border-color: rgba(103, 232, 249, 0.32);
+  background-color: rgba(103, 232, 249, 0.035);
+}
+
+.hairline {
+  border-color: var(--line-soft);
+}
+
+/* Slow drift used by the job-progress indicator and hero copy reveal. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise {
+  animation: rise 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes sheen {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+.sheen {
+  background-image: linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.14), transparent);
+  background-size: 200% 100%;
+  animation: sheen 1.6s linear infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(103, 232, 249, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(103, 232, 249, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(103, 232, 249, 0);
+  }
+}
+.pulse-ring {
+  animation: pulse-ring 1.9s ease-out infinite;
+}
+
+::selection {
+  background: rgba(103, 232, 249, 0.26);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--ink-850);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--ink-700);
+  border-radius: 6px;
+  border: 2px solid var(--ink-850);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #2b2b3d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
