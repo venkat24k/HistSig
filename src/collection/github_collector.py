@@ -60,6 +60,7 @@ _PR_REVIEWS_PER_PAGE = 30
 _PR_REVIEW_COMMENTS_PER_PAGE = 20
 _PR_COMMITS_PER_PAGE = 100
 _PR_COMMENTS_PER_PAGE = 50
+_PR_CLOSING_ISSUES_PER_PAGE = 20
 _LABELS_PER_PAGE = 20
 _RELEASE_PAGE_SIZE = 50
 
@@ -243,10 +244,13 @@ class PullRequestRecord:
     reviews: list[PRReviewRecord] = field(default_factory=list)
     review_comments: list[PRReviewCommentRecord] = field(default_factory=list)
     comments: list[PRCommentRecord] = field(default_factory=list)
+    closing_issue_numbers: list[int] = field(default_factory=list)
+    reaction_count: int = 0
     reviews_truncated: bool = False
     commits_truncated: bool = False
     review_comments_truncated: bool = False
     comments_truncated: bool = False
+    closing_issues_truncated: bool = False
 
 
 @dataclass
@@ -287,7 +291,7 @@ query($owner: String!, $name: String!, $pageSize: Int!, $commentsPageSize: Int!,
 """
 
 _PULL_REQUESTS_QUERY = """
-query($owner: String!, $name: String!, $pageSize: Int!, $reviewsPageSize: Int!, $reviewCommentsPageSize: Int!, $commitsPageSize: Int!, $prCommentsPageSize: Int!, $cursor: String) {
+query($owner: String!, $name: String!, $pageSize: Int!, $reviewsPageSize: Int!, $reviewCommentsPageSize: Int!, $commitsPageSize: Int!, $prCommentsPageSize: Int!, $closingIssuesPageSize: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(first: $pageSize, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
@@ -328,6 +332,11 @@ query($owner: String!, $name: String!, $pageSize: Int!, $reviewsPageSize: Int!, 
           totalCount
           nodes { databaseId author { login } createdAt body }
         }
+        closingIssuesReferences(first: $closingIssuesPageSize) {
+          totalCount
+          nodes { number }
+        }
+        reactions { totalCount }
       }
     }
   }
@@ -393,6 +402,7 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
         "owner": owner, "name": name, "pageSize": _PR_PAGE_SIZE,
         "reviewsPageSize": _PR_REVIEWS_PER_PAGE, "reviewCommentsPageSize": _PR_REVIEW_COMMENTS_PER_PAGE,
         "commitsPageSize": _PR_COMMITS_PER_PAGE, "prCommentsPageSize": _PR_COMMENTS_PER_PAGE,
+        "closingIssuesPageSize": _PR_CLOSING_ISSUES_PER_PAGE,
     }
     records = []
     for raw in _graphql_paginate(session, _PULL_REQUESTS_QUERY, variables, ("repository", "pullRequests")):
@@ -431,6 +441,7 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
             )
             for c in raw["comments"]["nodes"]
         ]
+        closing_issue_numbers = [n["number"] for n in raw["closingIssuesReferences"]["nodes"]]
         records.append(
             PullRequestRecord(
                 id=raw["databaseId"],
@@ -451,10 +462,13 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
                 reviews=reviews,
                 review_comments=review_comments,
                 comments=pr_comments,
+                closing_issue_numbers=closing_issue_numbers,
+                reaction_count=raw["reactions"]["totalCount"],
                 reviews_truncated=raw["reviews"]["totalCount"] > len(reviews),
                 commits_truncated=raw["commits"]["totalCount"] > len(raw["commits"]["nodes"]),
                 review_comments_truncated=review_comments_truncated,
                 comments_truncated=raw["comments"]["totalCount"] > len(pr_comments),
+                closing_issues_truncated=raw["closingIssuesReferences"]["totalCount"] > len(closing_issue_numbers),
             )
         )
     return records

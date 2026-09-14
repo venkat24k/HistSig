@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     commits_truncated INTEGER NOT NULL DEFAULT 0,
     review_comments_truncated INTEGER NOT NULL DEFAULT 0,
     comments_truncated INTEGER NOT NULL DEFAULT 0,
+    closing_issues_truncated INTEGER NOT NULL DEFAULT 0,
+    reaction_count    INTEGER NOT NULL DEFAULT 0,
     UNIQUE(repo_id, number)
 );
 
@@ -132,6 +134,17 @@ CREATE TABLE IF NOT EXISTS pr_labels (
     pr_id  INTEGER NOT NULL REFERENCES pull_requests(id),
     label  TEXT NOT NULL,
     PRIMARY KEY (pr_id, label)
+);
+
+-- Issues GitHub itself resolved as "closed by" this PR (its
+-- closingIssuesReferences connection) — the authoritative record of an
+-- issue link, not a text-guessed one. issue_number is stored rather than
+-- an issues.id FK because a closing reference can point to an issue in a
+-- different repository, which our issues table doesn't necessarily hold.
+CREATE TABLE IF NOT EXISTS pr_closing_issues (
+    pr_id         INTEGER NOT NULL REFERENCES pull_requests(id),
+    issue_number  INTEGER NOT NULL,
+    PRIMARY KEY (pr_id, issue_number)
 );
 
 CREATE TABLE IF NOT EXISTS pr_reviews (

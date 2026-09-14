@@ -608,3 +608,195 @@ Before adding any feature, ask:
 - **If NO:** do not add it automatically.
 - **If MAYBE:** explain why it might be useful, and let the user decide.
 - **If YES:** implement it in the simplest maintainable way.
+
+---
+
+# Addendum: Living Project State
+
+Everything above this line is the fixed constitution, written before
+implementation began. Everything below is a living record of where the
+project actually stands — updated as work progresses, so a new session
+(or one resuming after context compaction) doesn't have to re-derive it
+from git history or a lost conversation. Sections 1-32 still govern; this
+addendum records facts and decisions, not new rules.
+
+## 33. Implementation Status
+
+- **Phase 1 (Data Collection): done.** `src/collection/` — Git history via
+  PyDriller, issues/PRs/reviews/releases via GitHub GraphQL. Validated
+  against two real repositories (`pallets/click`, `pallets/markupsafe`),
+  re-collected several times as bugs were found and fixed (see Section 35).
+- **Phase 2 (Feature Extraction) — event formation: done.**
+  `src/events/` — candidate historical events, two granularities generated
+  and kept side by side (see Section 34).
+- **Phase 2 — normalization prerequisite: done.** `src/processing/` —
+  contributor identity resolution (git identity ↔ GitHub login), revert
+  detection, file-rename/identity tracking across renames. Needed before
+  event formation and before R features (file survival) can work.
+- **Phase 2 — P feature extraction: done.** `src/features/`. All ten P
+  features implemented, unit-tested, and verified against real data with
+  hand-computed worked examples (each matched exactly) plus repo-wide
+  invariant checks (e.g. `distinct_commenters ≤ comment_count`,
+  `review_rounds ≥ reviewer_count`, no negative `churn`/`files_changed`/
+  `reaction_count`, status/value null-consistency): `comment_count`,
+  `distinct_commenters`, `reviewer_count`, `review_rounds`, `files_changed`,
+  `churn`, `issue_link_present`, `issue_has_label`, `release_proximity`,
+  `reaction_count`. Four of these needed a real methodology decision (or a
+  real-data check first) before they could be built — see the new bullets
+  in Section 34. `reaction_count` (GitHub emoji reactions on the PR itself)
+  was the last one added, specifically because it's a genuinely new
+  attention signal — someone can react without commenting — not redundant
+  with the discussion-based features above it.
+- **Phase 2 — R feature extraction: not started.** Design decision already
+  made (Section 34) — implementation pending. This is the next piece of
+  work in the Section 27 order.
+- **Phase 3 (HistSig Scoring), divergence analysis, evaluation: not
+  started.**
+- **Demo application** (`src/api/` FastAPI backend + `frontend/` Next.js
+  app): built ahead of the Section 27 development order, at the user's
+  explicit request after being shown the conflict with Section 27/Section
+  25's "no production-grade frontend without approval" rule — permitted
+  under this file's own override clause ("this file wins unless the user
+  explicitly overrides it in the conversation"). The research pipeline
+  remains fully runnable from `scripts/` with no dependency on the API or
+  frontend.
+- Test suite: 156 tests, all offline (no network calls, in-memory/temp
+  SQLite, hand-built fixtures for tricky logic). Run with `pytest` from
+  the project root.
+- Raw schema has grown three times since Stage 1 was first built: a
+  `pr_comments` table (PR general-conversation comments GitHub's
+  `comments` connection exposes separately from inline review comments),
+  a `pr_closing_issues` table + `closing_issues_truncated` flag (GitHub's
+  own `closingIssuesReferences` — see Section 34), and a `reaction_count`
+  column on `pull_requests` (GitHub's `reactions.totalCount`). All three
+  required deleting and fully re-collecting `data/raw/*.db` and rebuilding
+  `data/processed/*.db` from scratch, because `CREATE TABLE IF NOT EXISTS`
+  does not add a column to a table that already exists (see Section 35) —
+  this is the expected procedure the next time a raw-schema column is
+  added, not something to work around with an ALTER TABLE migration.
+
+## 34. Settled Methodology Decisions
+
+These were discussed and approved in conversation; treat as decided
+unless the user reopens them — don't silently redo or second-guess them.
+
+- **Event definition — dual granularity, not a single choice.** Both are
+  generated and stored side by side so they can be compared later rather
+  than betting everything on one definition:
+  - `pr_bundle` (primary): each pull request is one event bundling its
+    commits; a commit never associated with any PR is its own standalone
+    event. (Discovered during validation: 40-60% of commits in both test
+    repos never went through a PR at all — this is normal, not a
+    collection bug, and is exactly why the standalone-commit half of the
+    definition matters.)
+  - `commit_level` (alternative): every commit is its own event, no
+    bundling.
+- **R features — no hard age-based exclusion.** Rejected a fixed cutoff
+  (e.g. "exclude events younger than 12 months") because it would discard
+  a young repository's entire history. Instead: compute R for every event
+  regardless of age, and *also* compute a maturity value (how long the
+  event has actually had to prove itself: observed-time-window ÷
+  event-age). How maturity gets used (filtering, weighting, confidence
+  interval) is deferred to the scoring stage — not decided yet.
+- **P/R missing-data convention — applies to every feature, present and
+  future.** Every feature is stored as a value column (NULL when not
+  applicable) plus a `<feature>_status` column with exactly one of:
+  - `complete` — a confident true value (0 is a valid complete value).
+  - `incomplete_lower_bound` — real but undercounted, because a
+    contributing raw table hit a Stage-1 truncation flag (e.g.
+    `reviews_truncated`). The number is a floor, not the true count.
+  - `not_applicable` — the concept doesn't exist for this event (e.g. a
+    standalone commit has no PR-comment channel at all).
+  A bare number or a silent 0 is never acceptable for a P/R feature.
+- **Weighting — equal weights for the first pass.** P(e) and R(e) will
+  initially combine features with equal weights, as a transparent
+  baseline, not learned or expert-assigned weights — per Section 25/26.
+  Revisit only after the evaluation stage exists to justify something more
+  sophisticated.
+- **Issue linkage — GitHub's own resolution, not text-guessing.**
+  `issue_link_present` and `issue_has_label` both read from
+  `pr_closing_issues`, populated from GitHub's `closingIssuesReferences`
+  GraphQL field (the same mechanism GitHub uses to auto-close an issue on
+  merge) rather than regex-matching "fixes #123" in PR bodies. Chosen over
+  the regex approach specifically because it's authoritative (validates
+  the issue exists, handles every closing keyword GitHub recognizes, stays
+  in sync as the PR is edited) where a hand-written keyword list would be
+  an assumption.
+- **`issue_severity_label` was redefined to `issue_has_label`, not built
+  as originally named.** Before implementing it, the real label
+  vocabulary in both test repos was checked: pallets/click's issue/PR
+  labels are entirely topical ('parsing', 'docs', 'shell completion', ...)
+  with nothing indicating severity or priority, and pallets/markupsafe has
+  zero issue labels at all (one PR, ever, labeled 'security'). A
+  keyword-matched severity classifier would have been an invented category
+  with almost no real support in either repository. `issue_has_label`
+  measures the honest, weaker thing the data actually supports — whether
+  the linked issue was labeled/triaged at all — using only
+  already-collected data. Revisit a true severity/priority feature only if
+  a repository with structured severity labeling (e.g. explicit P0/P1,
+  GitHub's own severity labels) is added later.
+- **`release_proximity` measures time until the *next* release, not since
+  the last one.** Defined as seconds from an event's `occurred_at` to the
+  nearest `releases.published_at` after it — "how soon did this ship,"
+  not "how far into the release cycle was this." `not_applicable` when no
+  later release exists in collected data (repo has no releases yet, or the
+  event is more recent than every collected release) — rare in practice
+  (~1% of pallets/click's events). The opposite direction (time since the
+  last release) and computing both directions as separate features were
+  both considered and explicitly not chosen.
+- **`reaction_count` scope — PR-level reactions only, not comment-level.**
+  Counts `reactions.totalCount` on the pull request itself. Reactions on
+  individual comments/reviews were considered and deliberately left out of
+  this first pass to keep the Stage 1 change small (would need a new
+  column on `pr_comments` and `pr_review_comments`, not just
+  `pull_requests`) — revisit only if PR-level reactions turn out too
+  sparse to be useful once scoring/evaluation is underway. Before building
+  it, real reaction counts were checked on the 20 most recent PRs/issues in
+  both test repos (unlike `issue_has_label`'s label check, this one came
+  back positive): reactions appear on roughly 5-25% of items in both
+  repos, sparse but real, so the feature was built rather than skipped.
+
+Things that cost real debugging time once; check here before re-deriving
+them from scratch.
+
+- **`localhost` is unreliable in this dev/agent environment.** Both `curl`
+  and an actual browser can hang indefinitely resolving/connecting to
+  `localhost`, while `127.0.0.1` works reliably every time. Bind servers
+  and configure clients — including CORS `allow_origins` — using
+  `127.0.0.1` explicitly, not `localhost`.
+- **Next.js dev-mode hot-reload fails silently in this sandbox.**
+  `npm run dev` (Turbopack) serves pages that render correctly but never
+  hydrate — zero client-side JS executes, no console errors, nothing is
+  interactive. Confirmed environment-specific: a production build
+  (`npm run build && npm run start`) works with zero errors. If UI testing
+  shows "page loads but nothing is clickable," check this before assuming
+  a code bug.
+- **PyDriller hangs indefinitely given a remote git URL directly**
+  (observed on this Windows setup — no CPU, no network activity, no
+  error, just hangs). Always clone with plain `git` first
+  (`src/collection/git_collector.py: ensure_local_clone`) and pass
+  PyDriller a local path only. `collect_git_history()` raises immediately
+  if given anything that looks like a remote URL, specifically so this
+  can't silently reproduce.
+- **PyDriller's `ModifiedFile.filename` is a basename only** (e.g.
+  `__init__.py`, not the full path) — collides across directories with
+  the same filename. Use `new_path`/`old_path` instead (already fixed).
+- **Compare commit timestamps via `author_date_utc`, never raw
+  `author_date`.** The raw field preserves each committer's local UTC
+  offset, which sorts *incorrectly* as plain text against a different
+  offset (a real bug this caused: a file's `MODIFY` sorted before its own
+  `ADD`). `author_date_utc` is the UTC-normalized column added
+  specifically for correct chronological ordering.
+- **PyGithub (the library) was abandoned in favor of raw GraphQL/REST.**
+  It has real, confirmed bugs on this project: touching `Issue.pull_request`
+  silently triggers one extra full API call per issue (a lazy-completion
+  property), and it showed unexplained internal slowness/hangs unrelated
+  to that. `src/collection/github_collector.py` talks to GitHub directly
+  via `requests`. Don't reintroduce PyGithub without re-verifying these
+  are actually gone.
+- **GitHub GraphQL rate-limit exhaustion returns HTTP 200 with an
+  `errors` body**, not 403/429 — must be checked in the parsed JSON, not
+  just the HTTP status code (`_graphql()` in `github_collector.py` already
+  handles this).
+- **Raw/processed DB file naming:** `data/{raw,processed}/{owner}__{repo}.db`
+  (double underscore), via `src/pipeline.py: default_db_paths()`.
