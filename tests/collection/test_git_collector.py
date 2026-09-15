@@ -83,6 +83,54 @@ def test_ensure_local_clone_clones_when_missing(tmp_git_repo, tmp_path):
     assert collect_git_history(result_path) == collect_git_history(str(tmp_git_repo))
 
 
+def test_ensure_local_clone_passes_longpaths_flag_on_clone(tmp_path, monkeypatch):
+    # Regression test: on Windows, a real repository can have file paths
+    # past the 260-character MAX_PATH default (confirmed against
+    # pallets/streamlit's e2e_playwright test-snapshot filenames) -- git
+    # clone reports success at the object-transfer level but then fails
+    # to check those specific files out ("Filename too long"), and the
+    # whole clone command exits non-zero. `-c core.longpaths=true` is
+    # git's own opt-in fix and must be present on every command that
+    # writes the working tree. A full end-to-end repro isn't reliable in
+    # an automated test (the git building the fixture "remote" would
+    # itself need long-path support just to create the file), so this
+    # checks the actual command construction instead.
+    import subprocess
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ensure_local_clone("https://example.invalid/o/r.git", str(tmp_path / "mirror"))
+
+    assert len(calls) == 1
+    assert "-c" in calls[0] and "core.longpaths=true" in calls[0]
+    assert calls[0].index("-c") + 1 == calls[0].index("core.longpaths=true")
+
+
+def test_ensure_local_clone_passes_longpaths_flag_on_fetch_and_reset(tmp_path, monkeypatch):
+    import subprocess
+
+    (tmp_path / "mirror" / ".git").mkdir(parents=True)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ensure_local_clone("https://example.invalid/o/r.git", str(tmp_path / "mirror"))
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "-c" in cmd and "core.longpaths=true" in cmd
+
+
 def test_ensure_local_clone_fetches_and_updates_local_branch_when_already_present(tmp_git_repo, tmp_path):
     """A second call must pick up commits made on the "remote" since the
     first clone — plain `git fetch` alone would update only the

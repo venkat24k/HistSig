@@ -889,7 +889,7 @@ addendum records facts and decisions, not new rules.
   high-P/high-R/rest event_type-grouped view described above. Design
   tokens live in `frontend/app/globals.css`; shared components in
   `frontend/app/components/ui.tsx`.
-- Test suite: 270 tests, all offline (no network calls, in-memory/temp
+- Test suite: 272 tests, all offline (no network calls, in-memory/temp
   SQLite, hand-built fixtures for tricky logic). Run with `pytest` from
   the project root.
 - **All three test repositories (`pallets/click`, `pallets/markupsafe`,
@@ -1201,6 +1201,26 @@ unless the user reopens them — don't silently redo or second-guess them.
 Things that cost real debugging time once; check here before re-deriving
 them from scratch.
 
+- **Windows' 260-character MAX_PATH breaks `git clone` on real repositories
+  with long file paths** (confirmed against `pallets/streamlit`'s own
+  `e2e_playwright/__snapshots__/...` test-snapshot filenames). Git clones
+  the objects fine, then fails to check specific files out ("unable to
+  create file ...: Filename too long") and the whole clone command still
+  exits non-zero — from the API/frontend this surfaced as a "Clone
+  repository" pipeline failure with no further detail; the real message
+  was only visible in the backend's own stdout/stderr log
+  (`/tmp/backend.log` in this dev setup), not in the job's `error` field.
+  Fixed once, generically, in `src/collection/git_collector.py:
+  ensure_local_clone` — every command that writes the working tree
+  (`clone`, `reset --hard`) now passes `-c core.longpaths=true`, git's own
+  opt-in workaround; needs no elevated permissions or Windows-wide
+  registry change (`LongPathsEnabled`), unlike some guides suggest. A
+  clone that failed before this fix leaves a broken partial directory
+  under `data/raw/_clones/<repo>/` (`.git` present, working tree
+  incomplete) — safe to delete and let `ensure_local_clone` re-clone from
+  scratch, since that directory is a regenerable git mirror, not raw
+  evidence itself (the SQLite files under `data/raw/*.db` are the actual
+  evidence store).
 - **`localhost` is unreliable in this dev/agent environment.** Both `curl`
   and an actual browser can hang indefinitely resolving/connecting to
   `localhost`, while `127.0.0.1` works reliably every time. Bind servers

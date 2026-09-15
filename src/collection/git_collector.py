@@ -71,21 +71,33 @@ def ensure_local_clone(remote_url: str, clone_dir: str, timeout_seconds: int = 3
     clone would silently return the same, now-stale commit list every time,
     which defeats the entire point of a "safe to re-run and stay current"
     collector.
+
+    `-c core.longpaths=true` is passed on every command that writes the
+    working tree (clone, reset --hard): Windows defaults to a 260-character
+    MAX_PATH, and some real repositories have file paths that exceed it
+    (confirmed against pallets/streamlit — `e2e_playwright/__snapshots__/...`
+    test-snapshot filenames run well past it). Without this flag, `git
+    clone` reports success at the object-transfer level but then fails to
+    check out those specific files ("unable to create file ...: Filename
+    too long") and the whole command still exits non-zero — this flag is
+    git's own opt-in workaround and needs no elevated permissions or global
+    git config change, unlike the Windows-wide `LongPathsEnabled` registry
+    setting some guides suggest instead.
     """
     clone_path = Path(clone_dir)
     if (clone_path / ".git").exists():
         subprocess.run(
-            ["git", "-C", str(clone_path), "fetch", "--all", "--tags", "--quiet"],
+            ["git", "-C", str(clone_path), "-c", "core.longpaths=true", "fetch", "--all", "--tags", "--quiet"],
             check=True, timeout=timeout_seconds, env=_GIT_ENV,
         )
         subprocess.run(
-            ["git", "-C", str(clone_path), "reset", "--hard", "--quiet", "@{u}"],
+            ["git", "-C", str(clone_path), "-c", "core.longpaths=true", "reset", "--hard", "--quiet", "@{u}"],
             check=True, timeout=timeout_seconds, env=_GIT_ENV,
         )
     else:
         clone_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
-            ["git", "clone", "--quiet", remote_url, str(clone_path)],
+            ["git", "-c", "core.longpaths=true", "clone", "--quiet", remote_url, str(clone_path)],
             check=True, timeout=timeout_seconds, env=_GIT_ENV,
         )
     return str(clone_path)
