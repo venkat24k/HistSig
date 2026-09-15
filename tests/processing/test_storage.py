@@ -58,6 +58,28 @@ def test_insert_file_identities_replaces_on_rerun(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM file_path_history").fetchone()[0] == 2
 
 
+def test_insert_file_identities_allows_two_identities_at_same_commit_and_path(tmp_path):
+    # Regression: a commit that deletes and re-adds the same path produces
+    # two FileIdentityRecords that both observe (commit_hash="h2", path="a.py")
+    # under different file_ids. The old PRIMARY KEY (repo_id, commit_hash,
+    # path) on file_path_history rejected the second insert with a UNIQUE
+    # constraint failure (hit on Homebrew/BrewUI's real history).
+    conn = make_conn(tmp_path)
+    files = [
+        FileIdentityRecord(first_path="a.py", last_path="a.py", is_deleted=True, path_history=[
+            FilePathObservation("h1", "a.py", "ADD"), FilePathObservation("h2", "a.py", "DELETE"),
+        ]),
+        FileIdentityRecord(first_path="a.py", last_path="a.py", is_deleted=False, path_history=[
+            FilePathObservation("h2", "a.py", "ADD"),
+        ]),
+    ]
+
+    insert_file_identities(conn, repo_id=1, files=files)
+
+    assert conn.execute("SELECT COUNT(*) FROM file_identities").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM file_path_history WHERE commit_hash = 'h2' AND path = 'a.py'").fetchone()[0] == 2
+
+
 def test_insert_data_availability_is_idempotent(tmp_path):
     conn = make_conn(tmp_path)
     insert_data_availability(conn, repo_id=1, has_releases=True, has_pr_reviews=False, has_issues=True,

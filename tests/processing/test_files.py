@@ -64,6 +64,30 @@ def test_delete_then_new_add_at_same_path_is_a_new_identity(raw_conn):
     assert files[1].is_deleted is False
 
 
+def test_delete_then_add_at_same_path_in_same_commit_is_two_identities(raw_conn):
+    # Real-world case (seen in Homebrew/BrewUI's history): a single commit
+    # both deletes and re-adds the same path, e.g. a submodule/symlink
+    # replaced by a regular file. change_type ordering follows commit_files
+    # insertion order (cf.id), so DELETE is processed before ADD here.
+    _insert_commit(raw_conn, "h1", "2024-01-01")
+    _insert_file_change(raw_conn, "h1", "a.py", None, "ADD")
+    _insert_commit(raw_conn, "h2", "2024-01-02")
+    _insert_file_change(raw_conn, "h2", "a.py", None, "DELETE")
+    _insert_file_change(raw_conn, "h2", "a.py", None, "ADD")
+    raw_conn.commit()
+
+    files = build_file_identities(raw_conn)
+
+    assert len(files) == 2
+    assert files[0].is_deleted is True
+    assert files[1].is_deleted is False
+    # Both identities recorded an observation for the same (commit, path).
+    assert [obs.path for obs in files[0].path_history] == ["a.py", "a.py"]
+    assert [obs.change_type for obs in files[0].path_history] == ["ADD", "DELETE"]
+    assert [obs.path for obs in files[1].path_history] == ["a.py"]
+    assert files[1].path_history[0].change_type == "ADD"
+
+
 def test_same_basename_different_directories_are_different_identities(raw_conn):
     _insert_commit(raw_conn, "h1", "2024-01-01")
     _insert_file_change(raw_conn, "h1", "pkg_a/__init__.py", None, "ADD")

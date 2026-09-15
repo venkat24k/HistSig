@@ -66,13 +66,20 @@ CREATE INDEX IF NOT EXISTS idx_file_identities_repo ON file_identities(repo_id);
 -- Every (commit, path) observation, linked to the canonical file identity
 -- active at that point — this is what lets a later stage answer "does the
 -- file this event touched still exist" even though its path changed.
+--
+-- file_id is part of the key, not just (repo_id, commit_hash, path):
+-- a single commit can legitimately touch the same path twice under two
+-- different identities (e.g. DELETE then ADD at the same path, which
+-- build_file_identities treats as retiring the old file and starting a
+-- new one — seen in real history, e.g. a submodule/symlink replaced by a
+-- regular file at the same path in one commit).
 CREATE TABLE IF NOT EXISTS file_path_history (
     repo_id      INTEGER NOT NULL,
     commit_hash  TEXT NOT NULL,
     path         TEXT NOT NULL,
     change_type  TEXT NOT NULL,
     file_id      INTEGER NOT NULL REFERENCES file_identities(id),
-    PRIMARY KEY (repo_id, commit_hash, path)
+    PRIMARY KEY (repo_id, commit_hash, path, file_id)
 );
 CREATE INDEX IF NOT EXISTS idx_file_path_history_file ON file_path_history(file_id);
 
