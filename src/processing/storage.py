@@ -19,7 +19,18 @@ from src.processing.identity import ContributorRecord
 def insert_contributors(conn: sqlite3.Connection, repo_id: int, contributors: list[ContributorRecord]) -> dict[int, int]:
     """Clears and rewrites all contributor data for this repo. Returns a
     mapping from the input list's index to the assigned database id, so
-    callers can link commits/etc. to the right contributor row."""
+    callers can link commits/etc. to the right contributor row.
+
+    `commit_annotations.contributor_id` references `contributors(id)`, so
+    a previous run's commit_annotations rows must be cleared *before*
+    `DELETE FROM contributors` below, or that delete fails with a
+    FOREIGN KEY constraint violation on any re-run against a repo that
+    already has processed data (e.g. re-analyzing a repository to pick up
+    new commits — see CLAUDE.md Section 34/35). `insert_commit_annotations`
+    (called later in `normalize_repository`) clears and re-populates this
+    same table anyway, so clearing it here first is free, not a duplicated
+    responsibility — just doing it in the order the foreign key requires."""
+    conn.execute("DELETE FROM commit_annotations WHERE repo_id = ?", (repo_id,))
     conn.execute("DELETE FROM contributor_git_identities WHERE repo_id = ?", (repo_id,))
     conn.execute("DELETE FROM contributor_github_identities WHERE repo_id = ?", (repo_id,))
     conn.execute("DELETE FROM contributors WHERE repo_id = ?", (repo_id,))

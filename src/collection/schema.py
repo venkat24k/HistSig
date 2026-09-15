@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     comments_truncated INTEGER NOT NULL DEFAULT 0,
     closing_issues_truncated INTEGER NOT NULL DEFAULT 0,
     reaction_count    INTEGER NOT NULL DEFAULT 0,
+    cross_references_truncated INTEGER NOT NULL DEFAULT 0,
     UNIQUE(repo_id, number)
 );
 
@@ -145,6 +146,19 @@ CREATE TABLE IF NOT EXISTS pr_closing_issues (
     pr_id         INTEGER NOT NULL REFERENCES pull_requests(id),
     issue_number  INTEGER NOT NULL,
     PRIMARY KEY (pr_id, issue_number)
+);
+
+-- Other issues/PRs that mentioned this PR (GitHub's own
+-- crossReferencedEvent timeline items — the authoritative "was this
+-- referenced elsewhere" record, not a text-guessed one; mirrors
+-- pr_closing_issues' reasoning). source_number is stored rather than an
+-- FK for the same reason as pr_closing_issues: the referencing item can
+-- be an issue or a PR, in this repo or (rarely) another one.
+CREATE TABLE IF NOT EXISTS pr_cross_references (
+    pr_id           INTEGER NOT NULL REFERENCES pull_requests(id),
+    source_number   INTEGER NOT NULL,
+    referenced_at   TEXT,
+    PRIMARY KEY (pr_id, source_number)
 );
 
 CREATE TABLE IF NOT EXISTS pr_reviews (

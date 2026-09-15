@@ -7,13 +7,18 @@ concept doesn't apply to this event type," and "we know a real value
 exists but our collection was capped before we saw all of it" (see
 CLAUDE.md Section 20). Values are computed feature-by-feature, verified
 against real data, and added as their own column — not all at once.
+
+P and R live in separate tables (`event_p_features` / `event_r_features`)
+even though both follow the identical value+status pattern — P and R must
+stay conceptually distinct (CLAUDE.md Section 2/25), and a single shared
+table would blur that distinction in storage even if never in analysis.
 """
 
 import sqlite3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS event_p_features (
-    event_id              INTEGER PRIMARY KEY REFERENCES candidate_events(id),
+    event_id              INTEGER PRIMARY KEY REFERENCES candidate_events(id) ON DELETE CASCADE,
     repo_id                INTEGER NOT NULL,
 
     comment_count            INTEGER,
@@ -49,6 +54,29 @@ CREATE TABLE IF NOT EXISTS event_p_features (
 CREATE INDEX IF NOT EXISTS idx_event_p_features_repo ON event_p_features(repo_id);
 """
 
+R_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS event_r_features (
+    event_id              INTEGER PRIMARY KEY REFERENCES candidate_events(id) ON DELETE CASCADE,
+    repo_id                INTEGER NOT NULL,
+
+    maturity                 REAL,
+    maturity_status          TEXT NOT NULL,
+
+    files_survived           INTEGER,
+    files_survived_status    TEXT NOT NULL,
+
+    subsequent_modification_count         INTEGER,
+    subsequent_modification_count_status  TEXT NOT NULL,
+
+    releases_since_count           INTEGER,
+    releases_since_count_status    TEXT NOT NULL,
+
+    later_references_count         INTEGER,
+    later_references_count_status  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_r_features_repo ON event_r_features(repo_id);
+"""
+
 
 def create_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
@@ -71,3 +99,18 @@ def reset_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS event_p_features")
     conn.commit()
     create_schema(conn)
+
+
+def create_r_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(R_SCHEMA_SQL)
+    conn.commit()
+
+
+def reset_r_schema(conn: sqlite3.Connection) -> None:
+    """Same reasoning as reset_schema, kept as a separate function (rather
+    than folding into reset_schema) so re-running P extraction never wipes
+    already-computed R data and vice versa — the two are extracted by
+    separate scripts on separate schedules."""
+    conn.execute("DROP TABLE IF EXISTS event_r_features")
+    conn.commit()
+    create_r_schema(conn)

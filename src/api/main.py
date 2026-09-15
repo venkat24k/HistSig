@@ -92,13 +92,21 @@ def get_repository(safe_name: str):
 
 
 @app.get("/api/repositories/{safe_name}/events")
-def list_events(safe_name: str, granularity: str = "pr_bundle", event_type: str | None = None, limit: int = 50, offset: int = 0):
+def list_events(
+    safe_name: str,
+    granularity: str = "pr_bundle",
+    event_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    high_p: bool | None = None,
+    high_r: bool | None = None,
+):
     if granularity not in ("pr_bundle", "commit_level"):
         raise HTTPException(400, "granularity must be 'pr_bundle' or 'commit_level'")
     if not (1 <= limit <= 500):
         raise HTTPException(400, "limit must be between 1 and 500")
     try:
-        return repositories.list_events(safe_name, granularity, event_type, limit, offset)
+        return repositories.list_events(safe_name, granularity, event_type, limit, offset, high_p, high_r)
     except repositories.RepositoryNotFound as exc:
         raise HTTPException(404, str(exc))
 

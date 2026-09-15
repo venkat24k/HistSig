@@ -148,6 +148,7 @@ def test_collect_pull_requests_includes_reviews_and_review_comments_and_commits(
         ]},
         "closingIssuesReferences": {"totalCount": 2, "nodes": [{"number": 42}, {"number": 43}]},
         "reactions": {"totalCount": 3},
+        "timelineItems": {"pageInfo": {"hasNextPage": False}, "nodes": [{"createdAt": "2024-02-01T00:00:00Z", "source": {"number": 99}}]},
     }
     session = FakeSession([
         {"repository": {"pullRequests": {"pageInfo": _page_info(), "nodes": [pr_node]}}}
@@ -175,6 +176,8 @@ def test_collect_pull_requests_includes_reviews_and_review_comments_and_commits(
     assert record.closing_issue_numbers == [42, 43]
     assert record.closing_issues_truncated is False
     assert record.reaction_count == 3
+    assert record.cross_references == [(99, "2024-02-01T00:00:00Z")]
+    assert record.cross_references_truncated is False
 
 
 def test_collect_pull_requests_flags_truncated_closing_issues():
@@ -189,6 +192,7 @@ def test_collect_pull_requests_flags_truncated_closing_issues():
         "comments": {"totalCount": 0, "nodes": []},
         "closingIssuesReferences": {"totalCount": 5, "nodes": [{"number": 1}]},
         "reactions": {"totalCount": 0},
+        "timelineItems": {"pageInfo": {"hasNextPage": False}, "nodes": []},
     }
     session = FakeSession([
         {"repository": {"pullRequests": {"pageInfo": _page_info(), "nodes": [pr_node]}}}
@@ -198,6 +202,35 @@ def test_collect_pull_requests_flags_truncated_closing_issues():
 
     assert result[0].closing_issue_numbers == [1]
     assert result[0].closing_issues_truncated is True
+
+
+def test_collect_pull_requests_flags_truncated_cross_references():
+    # Regression test: timelineItems.totalCount ignores the itemTypes
+    # filter on the live API (confirmed against pallets/click PR #1 --
+    # totalCount=7 with zero actual cross-reference nodes), so truncation
+    # must come from pageInfo.hasNextPage instead, not a totalCount
+    # comparison like every other *_truncated field here.
+    pr_node = {
+        "databaseId": 1, "number": 5, "title": "t", "body": "", "state": "OPEN",
+        "author": _user("dave"), "createdAt": "2024-01-01T00:00:00Z", "mergedAt": None,
+        "closedAt": None, "updatedAt": "2024-01-01T00:00:00Z",
+        "baseRefName": "main", "headRefName": "feature-branch",
+        "mergeCommit": None, "labels": {"nodes": []},
+        "commits": {"totalCount": 0, "nodes": []},
+        "reviews": {"totalCount": 0, "nodes": []},
+        "comments": {"totalCount": 0, "nodes": []},
+        "closingIssuesReferences": {"totalCount": 0, "nodes": []},
+        "reactions": {"totalCount": 0},
+        "timelineItems": {"pageInfo": {"hasNextPage": True}, "nodes": [{"createdAt": "2024-02-01T00:00:00Z", "source": {"number": 10}}]},
+    }
+    session = FakeSession([
+        {"repository": {"pullRequests": {"pageInfo": _page_info(), "nodes": [pr_node]}}}
+    ])
+
+    result = collect_pull_requests(session, "o/r")
+
+    assert result[0].cross_references == [(10, "2024-02-01T00:00:00Z")]
+    assert result[0].cross_references_truncated is True
 
 
 def test_collect_pull_requests_flags_truncated_general_comments():
@@ -214,6 +247,7 @@ def test_collect_pull_requests_flags_truncated_general_comments():
         ]},
         "closingIssuesReferences": {"totalCount": 0, "nodes": []},
         "reactions": {"totalCount": 0},
+        "timelineItems": {"pageInfo": {"hasNextPage": False}, "nodes": []},
     }
     session = FakeSession([
         {"repository": {"pullRequests": {"pageInfo": _page_info(), "nodes": [pr_node]}}}

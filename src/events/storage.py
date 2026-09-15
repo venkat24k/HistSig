@@ -35,13 +35,17 @@ def _resolve_contributor_id(
 def insert_events(
     processed_conn: sqlite3.Connection, repo_id: int, granularity: str, events: list[CandidateEvent],
 ) -> dict:
-    event_ids = [
-        row[0] for row in processed_conn.execute(
-            "SELECT id FROM candidate_events WHERE repo_id = ? AND granularity = ?", (repo_id, granularity)
-        )
-    ]
-    if event_ids:
-        processed_conn.executemany("DELETE FROM event_commits WHERE event_id = ?", [(i,) for i in event_ids])
+    # event_commits, and every later stage's per-event table
+    # (event_p_features, event_r_features, event_p_scores, event_r_scores,
+    # event_divergence), all declare event_id REFERENCES candidate_events(id)
+    # ON DELETE CASCADE specifically so this delete alone is enough to
+    # clear a repo's whole downstream analysis when its events are
+    # regenerated — Stage 3 storage doesn't need to know those later
+    # tables exist (CLAUDE.md Section 4: keep stages separate). Without
+    # the cascade, re-running event formation against a repo that already
+    # has P/R features/scores/divergence computed raised
+    # sqlite3.IntegrityError, since those tables' rows still referenced
+    # the about-to-be-deleted event ids.
     processed_conn.execute("DELETE FROM candidate_events WHERE repo_id = ? AND granularity = ?", (repo_id, granularity))
 
     unresolved_authors = 0

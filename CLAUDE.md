@@ -647,11 +647,139 @@ addendum records facts and decisions, not new rules.
   was the last one added, specifically because it's a genuinely new
   attention signal — someone can react without commenting — not redundant
   with the discussion-based features above it.
-- **Phase 2 — R feature extraction: not started.** Design decision already
-  made (Section 34) — implementation pending. This is the next piece of
-  work in the Section 27 order.
-- **Phase 3 (HistSig Scoring), divergence analysis, evaluation: not
-  started.**
+- **Phase 2 — R feature extraction: done.** `src/features/r_features.py`,
+  `event_r_features` table (kept structurally separate from
+  `event_p_features` — see Section 34). Five built, all unit-tested and
+  verified against real data with hand-computed worked examples:
+  `maturity` (event-level context every R feature needs, not a weighted
+  feature itself — see Section 34), `files_survived` (uses Stage 2's
+  `file_identities`/`file_path_history`, built back then specifically for
+  this), `subsequent_modification_count` (repeated maintenance — how many
+  later commits touched the same file(s) again), `releases_since_count`
+  (presence across later releases — how many releases shipped after this
+  event; needs `raw_conn` for the `releases` table), and
+  `later_references_count` (how many other issues/PRs referenced this PR
+  after it concluded, from GitHub's own `crossReferencedEvent` timeline
+  data — a new Stage 1 table, `pr_cross_references`; needs `raw_conn`,
+  PR-only). Real-data verification caught and fixed four issues before
+  calling the set done — two correctness bugs, one real performance
+  stall (`subsequent_modification_count` took minutes on pallets/click
+  before a precomputed-index fast path fixed it), and one GitHub GraphQL
+  API quirk (`timelineItems.totalCount` ignores its own `itemTypes`
+  filter) — see Section 34's R bullets; all four are worth reading before
+  adding another R feature, since they're the kind of mistake that's easy
+  to repeat. `re-review_activity` (the sixth CLAUDE.md Section 2 R
+  candidate) was checked against real data and explicitly **not built** —
+  see Section 34.
+- **Phase 3 (HistSig Scoring) — both P-score and R-score done, still not
+  combined.** `src/scoring/` — `src/scoring/ranking.py` holds the shared
+  algorithm (percentile-rank average per `(granularity, event_type)`
+  group, equal-weighted, plus a configurable top-percentile threshold);
+  `p_score.py` and `r_score.py` are thin wrappers naming each axis's own
+  feature table/list. R-score deliberately excludes `maturity` from the
+  averaged features — it's context, not a weighted signal, per Section
+  34 — which was built and documented, not asked about again, since it
+  followed directly from R's already-settled design. Every methodology
+  choice in the scoring algorithm itself (normalization method,
+  per-event-type grouping, the threshold rule) was discussed and approved
+  by the user before implementing for P, then explicitly reused for R at
+  the user's request ("do everything we did for P" for R) — see Section
+  34. This is **still not** the full HistSig score: P and R are scored
+  independently and nothing here combines them into one number — that's
+  divergence analysis, not started. Wired into the demo app: `GET
+  .../events` accepts `high_p` and `high_r` (independently, combinable)
+  and returns per-group `p_thresholds`/`r_thresholds`; `GET
+  .../events/{id}` returns both `p_score` and `r_score`; the frontend
+  shows "high P"/"high R" badges, both raw scores, independent "P
+  attention"/"R attention" filters, and (when filtering by attention with
+  no specific event_type picked) splits results into one section per
+  event_type so each group's own threshold is visible side by side for
+  both axes at once.
+  R-score also excludes events below `MIN_MATURITY_FOR_SCORING` (default
+  0.05, `--min-maturity` on `scripts/compute_r_scores.py`) from the
+  ranking population entirely — see Section 34's new bullet for why and
+  how this was decided; the frontend shows "too young to rank yet" for
+  such an event instead of a score, while still showing its raw R feature
+  values (nothing about raw evidence is hidden, only the ranking).
+- **Phase 4 (Divergence Analysis) — first pass done, not yet wired into
+  the demo app's UI.** `src/divergence/` — `classify_divergence` labels
+  every event that has *both* a non-null `is_high_p` and `is_high_r`
+  (i.e. both axes actually got scored) into one of Section 3's four
+  quadrants, reusing the already-approved `is_high_p`/`is_high_r` flags
+  directly — no new threshold or category invented (Section 25). An
+  event missing either axis is left unclassified rather than guessed at,
+  same missing-data principle as everywhere else. Stored in
+  `event_divergence` (`scripts/compute_divergence.py`, requires P and R
+  scores to already exist — and, since this session, always runs as part
+  of `run_full_pipeline`, see below). Run against all three real repos as
+  a first empirical look (not yet a validated finding — Section 11's
+  evaluation stage is what would check this against human judgment):
+  | repo | classified | Truly Important | Discussed but Forgotten | Silent but Critical | Routine Noise |
+  |---|---|---|---|---|---|
+  | markupsafe | 1646 | 58 | 106 | 107 | 1375 |
+  | click | 5733 | 263 | 348 | 310 | 4812 |
+  | venvdoctor | 14 | 0 | 2 | 2 | 10 |
+  Both real repos populate "Silent but Critical" non-trivially (107 and
+  310 events) — the quadrant RQ3 cares about isn't empty, which is a
+  necessary (not sufficient) condition for the framework being useful.
+  venvdoctor is too small (14 classified events) to read anything into
+  its counts. The *data* is computed for every analyzed repo now; showing
+  it in the frontend UI (a quadrant filter/badge) is still the natural
+  next step if this direction continues.
+- **`src/pipeline.py: run_full_pipeline` now runs the complete research
+  chain by default for any repository, not just collection.**
+  `DEFAULT_STAGES` grew from `("collect", "normalize", "events")` to
+  also include `p_features`, `r_features`, `p_scores`, `r_scores`,
+  `divergence` — so the demo app's one-click "Analyze repository" flow
+  (`src/api/jobs.py`), and any future caller that doesn't override
+  `stages`, now takes a repo all the way to a full P/R score and
+  divergence classification, not just candidate events. Before this,
+  only whichever repos happened to have `scripts/extract_features.py`
+  etc. run against them by hand (in practice, only `pallets/click`) had
+  P data at all — this was a real, user-visible bug: `GET .../events`
+  crashed with a 500 whenever `high_p` was requested against a repo
+  missing `event_p_scores` (see the bullet below). Every new stage is
+  pure orchestration reusing the exact functions `scripts/*.py` already
+  call and that are already unit-tested elsewhere — `pipeline.py` adds no
+  new methodology of its own. `scripts/collect_repository.py` is
+  unaffected (it explicitly passes `stages=("collect",)`).
+- **Two real "safe to re-run" bugs found and fixed while wiring the
+  above** — both would have crashed "Analyze repository" a second time
+  against any repo that already had processed data (a completely normal
+  usage pattern: re-analyzing to pick up new commits), not just a
+  hypothetical:
+  1. `insert_contributors` (`src/processing/storage.py`) deleted
+     `contributors` before clearing `commit_annotations`, whose
+     `contributor_id` column references it — a second `normalize` run
+     against the same repo raised `sqlite3.IntegrityError`. Fixed by
+     clearing `commit_annotations` first (that table gets fully
+     re-populated later in the same function anyway, so this is free,
+     not a duplicated responsibility).
+  2. `insert_events` (`src/events/storage.py`) deleted `candidate_events`
+     while `event_commits` and every later stage's per-event table
+     (`event_p_features`, `event_r_features`, `event_p_scores`,
+     `event_r_scores`, `event_divergence`) still referenced those event
+     ids — same class of bug, one stage later, newly surfaced by this
+     session's P/R/divergence tables. Fixed at the schema level instead
+     of patching `insert_events` to know about every downstream table
+     (which would blur Section 4's "keep stages separate" the other
+     way): every one of those tables' `event_id` FK now declares
+     `ON DELETE CASCADE` against `candidate_events(id)`, so deleting a
+     repo's events alone correctly wipes its whole downstream analysis.
+     Since every one of those tables is already fully dropped and
+     recreated by its own `reset_schema` on every extraction/scoring/
+     divergence run, this schema change needed no live migration for
+     fresh runs — but the three real repos' *existing* processed
+     `.db` files predated the cascade and had to be deleted and rebuilt
+     from scratch once (same accepted procedure as every other raw/
+     processed schema change this project has hit — see Section 35),
+     which also served as the first real end-to-end verification of the
+     new full-pipeline chain.
+  **Lesson worth generalizing: any table added with `event_id ...
+  REFERENCES candidate_events(id)` (or any other FK into a table an
+  earlier stage might legitimately re-run and rewrite) must declare
+  `ON DELETE CASCADE` from the start** — this class of bug was hit twice
+  in immediate succession specifically because it wasn't.
 - **Demo application** (`src/api/` FastAPI backend + `frontend/` Next.js
   app): built ahead of the Section 27 development order, at the user's
   explicit request after being shown the conflict with Section 27/Section
@@ -659,17 +787,42 @@ addendum records facts and decisions, not new rules.
   under this file's own override clause ("this file wins unless the user
   explicitly overrides it in the conversation"). The research pipeline
   remains fully runnable from `scripts/` with no dependency on the API or
-  frontend.
-- Test suite: 156 tests, all offline (no network calls, in-memory/temp
+  frontend. Redesigned end-to-end at the user's request partway through:
+  light theme (replacing the original dark palette), a custom Three.js
+  node-link hero graphic on the landing page, a standard labeled-dropdown
+  filter bar on the events list (replacing an ad-hoc chip row), and the
+  high-P/high-R/rest event_type-grouped view described above. Design
+  tokens live in `frontend/app/globals.css`; shared components in
+  `frontend/app/components/ui.tsx`.
+- Test suite: 245 tests, all offline (no network calls, in-memory/temp
   SQLite, hand-built fixtures for tricky logic). Run with `pytest` from
   the project root.
-- Raw schema has grown three times since Stage 1 was first built: a
+- **All three test repositories (`pallets/click`, `pallets/markupsafe`,
+  `venkat24k/venvdoctor`) now have both P and R fully extracted and
+  scored.** Before this, only `pallets/click` had P features/scores
+  computed — markupsafe and venvdoctor had R only. That gap caused a real
+  bug: `GET .../events` with `high_p=true` (alone or combined with
+  `high_r=true`) crashed with a 500 on any repo missing `event_p_scores`,
+  because `list_events`'s `JOIN event_p_scores` had no guard for a
+  not-yet-created table, unlike every other "not computed yet" path in
+  `src/api/repositories.py` (`_thresholds_for_granularity`,
+  `_p_features_dict`, etc., all catch `sqlite3.OperationalError`). Fixed
+  by wrapping the same query in a `try/except sqlite3.OperationalError`
+  that degrades to `total=0, events=[]` — filtering by an axis that
+  hasn't been scored yet can only ever match zero events, never an error.
+  Both fixes (the missing P data, and the crash itself) are needed
+  together: the crash could resurface on any future repo added before its
+  P-score run completes, so the code fix is the permanent one.
+- Raw schema has grown four times since Stage 1 was first built: a
   `pr_comments` table (PR general-conversation comments GitHub's
   `comments` connection exposes separately from inline review comments),
   a `pr_closing_issues` table + `closing_issues_truncated` flag (GitHub's
-  own `closingIssuesReferences` — see Section 34), and a `reaction_count`
-  column on `pull_requests` (GitHub's `reactions.totalCount`). All three
-  required deleting and fully re-collecting `data/raw/*.db` and rebuilding
+  own `closingIssuesReferences` — see Section 34), a `reaction_count`
+  column on `pull_requests` (GitHub's `reactions.totalCount`), and a
+  `pr_cross_references` table + `cross_references_truncated` flag
+  (GitHub's `crossReferencedEvent` timeline items, backing
+  `later_references_count` — see Section 34). All four required deleting
+  and fully re-collecting `data/raw/*.db` and rebuilding
   `data/processed/*.db` from scratch, because `CREATE TABLE IF NOT EXISTS`
   does not add a column to a table that already exists (see Section 35) —
   this is the expected procedure the next time a raw-schema column is
@@ -755,6 +908,200 @@ unless the user reopens them — don't silently redo or second-guess them.
   both test repos (unlike `issue_has_label`'s label check, this one came
   back positive): reactions appear on roughly 5-25% of items in both
   repos, sparse but real, so the feature was built rather than skipped.
+- **P-score normalization — percentile-rank average, not min-max/z-score.**
+  Chosen because the 10 features are on wildly different scales (single
+  digits for `comment_count`, thousands for `churn`) and heavily skewed
+  (a handful of very large PRs would compress min-max-scaled scores of
+  everything else toward 0). Each feature is converted to a percentile
+  rank in `[0, 1]` within its scoring group, then averaged with equal
+  weight per Section 25/26 — see `src/scoring/p_score.py`.
+- **P-score grouping — scored and thresholded separately per
+  `(granularity, event_type)`, never across the whole repo.** A standalone
+  commit can only ever draw on 3 of the 10 features (`files_changed`,
+  `churn`, `release_proximity` — it structurally has no comment/review
+  channel), so scoring it against pull requests on one shared scale would
+  make "high P" almost always mean "was a PR," burying the "Silent but
+  Critical" quadrant (Section 3) before R is even in the picture.
+  `not_applicable` features are excluded from an event's average, never
+  averaged in as 0, per the existing missing-data convention above.
+- **P-score threshold — top 10% per group, explicitly provisional.**
+  `is_high_p` flags the top `top_percentile` (default 0.10, always passed
+  explicitly, never hard-coded — Section 25) of each group's non-null
+  P-scores. This is an exploratory first-pass cut for the user's planned
+  P-vs-R divergence study, not a validated boundary — Section 11's
+  evaluation stage is what would eventually check it against human
+  judgment. Revisit the percentile once real divergence cases are being
+  looked at.
+- **Known limitation, accepted rather than fixed: standalone commits are
+  never grouped, even when several of them are really one logical
+  change.** `form_standalone_commit_events` (`src/events/formation.py`)
+  makes every commit that isn't part of any PR its own independent
+  event — no grouping by author, time proximity, or an unbroken
+  parent→child chain. If a real update is split into, say, 3 raw commits
+  pushed directly (no PR), it becomes 3 separate low-signal events instead
+  of one: each has `not_applicable` for every discussion feature (no PR
+  means no comment channel), and `files_changed`/`churn` each reflect only
+  a third of the true combined change — diluting what could be a
+  genuinely important change across three mediocre P scores instead of
+  one high one. Raised and explicitly left unfixed for now (revisit only
+  if it turns out to distort real results) rather than silently designing
+  a grouping heuristic — changing what counts as a "candidate historical
+  event" is core Phase 2 methodology, not a small tweak, so any fix needs
+  its exact rule agreed first, the same way every other feature here was.
+- **R's `maturity` formula, locked in before any R feature was built:**
+  `(latest_commit_date − occurred_at) / (latest_commit_date − earliest_commit_date)`
+  — the fraction of the repository's *entire* observed history that
+  happened after this event, using `repository_data_availability`'s
+  window. An event near the start of history → maturity ≈ 1 (almost
+  everything collected happened after it, so R had its full chance to
+  show up); an event from the very edge of collection → maturity ≈ 0 (too
+  early to judge). Chosen specifically because it's the only reading of
+  "observed-time-window ÷ event-age" where the ratio isn't trivially 1.0
+  for every event — the other reading (raw age as a plain duration) was
+  explicitly considered and rejected as not comparable across repos with
+  different collection spans.
+- **Two real correctness bugs `maturity`/`files_survived` hit during
+  real-data verification, both instructive beyond just these two
+  features:**
+  1. `files_survived`'s completeness check originally asked "is this
+     commit_hash present in `file_path_history`" to detect a missing
+     commit — but `file_path_history` only has rows for commits that
+     touched *some* file, and ~37% of pallets/markupsafe's commits are
+     merges with zero recorded file changes (PyDriller doesn't diff
+     merges by default). That wrongly flagged every fileless merge commit
+     as `incomplete_lower_bound` (43% of all events, far higher than any
+     real evidence gap). Fixed by checking `commit_annotations` instead
+     (populated for *every* raw commit regardless of file count) to tell
+     "genuinely missing from local history" apart from "known, but
+     touched nothing" — after the fix the rate matched P's
+     `files_changed` almost exactly (115 vs 115 on markupsafe), which is
+     what confirmed the fix was actually correct and not just different.
+     **Lesson: when checking whether evidence is "missing" for
+     completeness purposes, check against a table that's populated
+     unconditionally for the entity in question, not one that's only
+     populated when there's something to record** — an empty result from
+     the latter is ambiguous between "missing" and "genuinely nothing
+     there."
+  2. `maturity` produced small negative values for 12 of
+     pallets/markupsafe's `pull_request` events before real-data
+     verification caught it. Cause: a `pull_request` event's
+     `occurred_at` is `merged_at` or `closed_at` or `created_at` (see
+     `form_pr_bundle_events`), and for a PR that never merged any
+     commits, that date isn't bounded by `latest_commit_date` the way a
+     commit's own date always is — a still-open or commit-less-closed PR
+     can have activity after the last collected commit. Fixed by treating
+     `occurred_at` outside `[earliest_commit_date, latest_commit_date]`
+     as `not_applicable` rather than computing an out-of-domain ratio.
+     **Lesson: an event-level timestamp (`occurred_at`) is not
+     interchangeable with a commit-level timestamp for bounds-checking,
+     even though most events are commit-derived** — pull_request events
+     specifically can fall outside a window defined purely from commit
+     dates, and every future R feature that touches `occurred_at` should
+     check its own bounds rather than assuming this was already handled
+     elsewhere.
+  3. **Performance, not correctness, but real: `subsequent_modification_count`'s
+     first implementation queried the database once per event** (join
+     each of the event's touched files against every other commit that
+     touched them, filtered by date). Correct, and fine on
+     pallets/markupsafe (1,741 events) — but on pallets/click (6,768
+     events, several files with hundreds of touches) it stalled for
+     minutes with no result, because a frequently-touched file's entire
+     history gets redundantly re-scanned from scratch by every one of the
+     many events that happen to touch it. An index on
+     `candidate_events(repo_id, primary_commit_hash)` (missing before
+     this — added to `src/events/schema.py`) helped one layer of it but
+     wasn't the real fix. Fixed by `build_file_touch_index`
+     (`src/features/r_features.py`): one query builds every file's sorted
+     touch history *once* per extraction run, then every event does an
+     in-memory binary search (`bisect_right`) instead of a fresh query —
+     click's run went from stalling past several minutes to 1.4 seconds.
+     **Lesson: a per-event query that joins against "every other commit
+     touching the same file(s)" does not scale once popular files are
+     touched by many events — precompute once per repository and reuse,
+     the same shape of fix this codebase already uses in other stages
+     (e.g. `repository_data_availability`), not a new pattern.** Check
+     for this shape *before* building a feature that reasons about a
+     file's/entity's full history from multiple events' perspectives, not
+     after it's slow on a real repository.
+- **`MIN_MATURITY_FOR_SCORING = 0.05` — the "how maturity gets used"
+  question this file's R design explicitly deferred, now settled.** The
+  user asked to exclude "very young" events from R scoring and asked what
+  "young" should mean; rather than guessing a number, real R feature
+  values were checked across maturity bands first (`event_r_features` on
+  pallets/markupsafe): below ~5% maturity, events had a median of 0
+  subsequent modifications and 1 release since — genuinely nothing has
+  had time to happen yet, not a real low-salience signal. 0.05 was then
+  presented as the recommended option (alongside a stricter 0.01 and "no
+  cutoff, filter in the UI instead") and the user picked it explicitly —
+  not chosen unilaterally. Implementation: events with `maturity < 0.05`
+  (or unknown maturity — an event whose maturity couldn't be verified
+  can't be confirmed to clear the bar either) are excluded from the
+  ranking population in `compute_r_scores` (`src/scoring/r_score.py`,
+  `MIN_MATURITY_FOR_SCORING`, `--min-maturity` on
+  `scripts/compute_r_scores.py`) — they can never be flagged `is_high_r`,
+  and just as importantly they're removed from the pool entirely so they
+  can't drag down or inflate the percentile ranks of events that are
+  mature enough to judge. This is a ranking-time exclusion only:
+  `event_r_features` still stores a real value for every event regardless
+  of age (Section 34's original "no hard cutoff" decision, about feature
+  *computation*, is unchanged) — the frontend shows a "too young to rank
+  yet" label instead of a score/badge for such an event, but its raw R
+  feature values stay fully visible. The shared scoring core
+  (`src/scoring/ranking.py: compute_group_scores`) grew a generic
+  `exclude_event_ids` parameter for this — P scoring passes nothing and
+  is completely unaffected (verified: the full existing P-score test
+  suite still passes unchanged after the refactor).
+- **`later_references_count` — GitHub's authoritative `crossReferencedEvent`
+  timeline, not a regex scan of PR bodies for `#NNN`.** Before building
+  either candidate, real signal density was checked on pallets/markupsafe:
+  52% of PR bodies mention a `#NNN` reference (real signal, worth
+  building), but only via text-guessing. The regex approach was rejected
+  for the same reason `issue_link_present` rejected it — it can't validate
+  the reference actually resolves, handles cross-repo references, or stays
+  in sync as a PR is edited, where GitHub's own `crossReferencedEvent`
+  timeline item is authoritative. Implementation: a new Stage 1 table
+  `pr_cross_references` (`pr_id, source_number, referenced_at`) populated
+  from `PullRequest.timelineItems(itemTypes: [CROSS_REFERENCED_EVENT])`;
+  the feature counts references with `referenced_at > occurred_at` only.
+  That "later" filter was checked against real data before treating it as
+  correct, not assumed: 41% of markupsafe's collected cross-references (30
+  of 73) happened *before* the target PR's own `occurred_at` — active
+  discussion referencing a PR that hasn't merged yet is common, and
+  counting those would conflate "discussed at the time" (P territory) with
+  "still referenced afterward" (what R is asking). `not_applicable` for
+  every non-`pull_request` event (GitHub's cross-reference timeline has no
+  raw-commit equivalent).
+- **`re-review_activity` (the sixth Section 2 R candidate) — checked
+  against real data and explicitly not built.** Before committing to it,
+  real review coverage was checked on both test repos: only 4.0% of
+  markupsafe's PRs (15/377) and 14.9% of click's (283/1895) have *any*
+  review at all. Too sparse in both repos to support a meaningful
+  "was this re-reviewed" signal — most events would come back
+  `not_applicable`, and the ones that don't wouldn't be comparable across
+  a population this thin. Not revisited unless a repository with
+  substantially heavier review culture is added to the study.
+- **GitHub GraphQL bug found while verifying `later_references_count`:
+  `timelineItems.totalCount` ignores its own `itemTypes` filter.**
+  `PullRequest.timelineItems(itemTypes: [CROSS_REFERENCED_EVENT])`
+  returns a `totalCount` that counts *every* timeline item on the PR
+  (comments, commits, label changes, ...), not just the
+  `CROSS_REFERENCED_EVENT` ones the `nodes` list is actually filtered to
+  — confirmed directly against the live API (pallets/click PR #1:
+  `totalCount: 7`, `nodes: []`). The first implementation compared
+  `totalCount > len(nodes)` to flag `cross_references_truncated` (the same
+  pattern used for every other paginated Stage 1 connection, e.g.
+  `reviews_truncated`), which is wrong here specifically and silently
+  flagged nearly every PR in a full click re-collection as
+  `incomplete_lower_bound` even when it had zero real cross-references.
+  Fixed by reading `pageInfo.hasNextPage` instead (added to the query),
+  confirmed against the same live query to correctly track the
+  already-`itemTypes`-filtered connection. **Lesson: don't assume a
+  GraphQL connection's `totalCount` respects a filter argument just
+  because every other connection in this schema does — verify against the
+  live API before trusting it, the same way every other R/P feature's
+  assumption was checked against real data first.**
+
+## 35. Known Environment / Technical Gotchas
 
 Things that cost real debugging time once; check here before re-deriving
 them from scratch.

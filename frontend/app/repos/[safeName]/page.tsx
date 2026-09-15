@@ -36,9 +36,9 @@ export default function RepoDetailPage({ params }: { params: Promise<{ safeName:
 
       {repo && (
         <div className="rise">
-          <h1 className="mt-3 text-2xl font-semibold tracking-tight">{repo.name}</h1>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-faint">
-            <a href={repo.url} target="_blank" rel="noreferrer" className="hover:text-cyan transition-colors">
+          <h1 className="mt-3 text-2xl font-bold tracking-tight">{repo.name}</h1>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-faint">
+            <a href={repo.url} target="_blank" rel="noreferrer" className="hover:text-indigo transition-colors">
               {repo.url}
             </a>
             <span className="text-line">•</span>
@@ -69,7 +69,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ safeName:
           <div className="mt-8 grid gap-3 sm:grid-cols-2">
             <Link href={`/repos/${safeName}/events?granularity=pr_bundle`}>
               <Panel hover className="h-full px-5 py-4">
-                <div className="text-sm font-medium text-cyan">Browse PR-bundle events →</div>
+                <div className="text-sm font-semibold text-indigo">Browse PR-bundle events →</div>
                 <p className="mt-1.5 text-xs leading-relaxed text-fg-faint">
                   Each pull request is one event bundling its commits; commits pushed outside any PR stand alone.
                 </p>
@@ -77,7 +77,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ safeName:
             </Link>
             <Link href={`/repos/${safeName}/events?granularity=commit_level`}>
               <Panel hover className="h-full px-5 py-4">
-                <div className="text-sm font-medium text-violet">Browse commit-level events →</div>
+                <div className="text-sm font-semibold text-violet">Browse commit-level events →</div>
                 <p className="mt-1.5 text-xs leading-relaxed text-fg-faint">
                   Every commit as its own event, with no bundling — the alternative granularity, kept for comparison.
                 </p>

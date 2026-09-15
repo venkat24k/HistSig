@@ -61,6 +61,7 @@ _PR_REVIEW_COMMENTS_PER_PAGE = 20
 _PR_COMMITS_PER_PAGE = 100
 _PR_COMMENTS_PER_PAGE = 50
 _PR_CLOSING_ISSUES_PER_PAGE = 20
+_PR_CROSS_REFERENCES_PER_PAGE = 20
 _LABELS_PER_PAGE = 20
 _RELEASE_PAGE_SIZE = 50
 
@@ -246,11 +247,25 @@ class PullRequestRecord:
     comments: list[PRCommentRecord] = field(default_factory=list)
     closing_issue_numbers: list[int] = field(default_factory=list)
     reaction_count: int = 0
+    # (source_number, referenced_at) for every other issue/PR whose
+    # timeline shows it referencing this PR (GitHub's crossReferencedEvent).
+    cross_references: list[tuple[int, str | None]] = field(default_factory=list)
     reviews_truncated: bool = False
     commits_truncated: bool = False
     review_comments_truncated: bool = False
     comments_truncated: bool = False
     closing_issues_truncated: bool = False
+    # Derived from timelineItems.pageInfo.hasNextPage, NOT totalCount>len(nodes)
+    # like every other *_truncated field here. Confirmed against the live API:
+    # GitHub's `timelineItems.totalCount` ignores the `itemTypes` filter and
+    # reports the count of ALL timeline items (comments, commits, labels,
+    # ...), not just CROSS_REFERENCED_EVENT ones -- e.g. pallets/click PR #1
+    # returned totalCount=7 with zero actual cross-reference nodes, which
+    # would make the totalCount-comparison formula flag nearly every PR as
+    # truncated regardless of its real cross-reference count. pageInfo's
+    # hasNextPage, by contrast, tracks the cursor over the already-filtered
+    # connection and matches the actual node list correctly.
+    cross_references_truncated: bool = False
 
 
 @dataclass
@@ -291,7 +306,7 @@ query($owner: String!, $name: String!, $pageSize: Int!, $commentsPageSize: Int!,
 """
 
 _PULL_REQUESTS_QUERY = """
-query($owner: String!, $name: String!, $pageSize: Int!, $reviewsPageSize: Int!, $reviewCommentsPageSize: Int!, $commitsPageSize: Int!, $prCommentsPageSize: Int!, $closingIssuesPageSize: Int!, $cursor: String) {
+query($owner: String!, $name: String!, $pageSize: Int!, $reviewsPageSize: Int!, $reviewCommentsPageSize: Int!, $commitsPageSize: Int!, $prCommentsPageSize: Int!, $closingIssuesPageSize: Int!, $crossReferencesPageSize: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(first: $pageSize, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
@@ -337,6 +352,18 @@ query($owner: String!, $name: String!, $pageSize: Int!, $reviewsPageSize: Int!, 
           nodes { number }
         }
         reactions { totalCount }
+        timelineItems(first: $crossReferencesPageSize, itemTypes: [CROSS_REFERENCED_EVENT]) {
+          pageInfo { hasNextPage }
+          nodes {
+            ... on CrossReferencedEvent {
+              createdAt
+              source {
+                ... on Issue { number }
+                ... on PullRequest { number }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -403,6 +430,7 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
         "reviewsPageSize": _PR_REVIEWS_PER_PAGE, "reviewCommentsPageSize": _PR_REVIEW_COMMENTS_PER_PAGE,
         "commitsPageSize": _PR_COMMITS_PER_PAGE, "prCommentsPageSize": _PR_COMMENTS_PER_PAGE,
         "closingIssuesPageSize": _PR_CLOSING_ISSUES_PER_PAGE,
+        "crossReferencesPageSize": _PR_CROSS_REFERENCES_PER_PAGE,
     }
     records = []
     for raw in _graphql_paginate(session, _PULL_REQUESTS_QUERY, variables, ("repository", "pullRequests")):
@@ -442,6 +470,7 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
             for c in raw["comments"]["nodes"]
         ]
         closing_issue_numbers = [n["number"] for n in raw["closingIssuesReferences"]["nodes"]]
+        cross_references = [(n["source"]["number"], n.get("createdAt")) for n in raw["timelineItems"]["nodes"]]
         records.append(
             PullRequestRecord(
                 id=raw["databaseId"],
@@ -464,11 +493,13 @@ def collect_pull_requests(session: requests.Session, owner_repo: str) -> list[Pu
                 comments=pr_comments,
                 closing_issue_numbers=closing_issue_numbers,
                 reaction_count=raw["reactions"]["totalCount"],
+                cross_references=cross_references,
                 reviews_truncated=raw["reviews"]["totalCount"] > len(reviews),
                 commits_truncated=raw["commits"]["totalCount"] > len(raw["commits"]["nodes"]),
                 review_comments_truncated=review_comments_truncated,
                 comments_truncated=raw["comments"]["totalCount"] > len(pr_comments),
                 closing_issues_truncated=raw["closingIssuesReferences"]["totalCount"] > len(closing_issue_numbers),
+                cross_references_truncated=raw["timelineItems"]["pageInfo"]["hasNextPage"],
             )
         )
     return records

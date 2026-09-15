@@ -10,6 +10,11 @@ const STAGES = [
   { key: "collecting", label: "Collect evidence", detail: "Commits, issues, pull requests, releases" },
   { key: "normalizing", label: "Normalize", detail: "Identities, reverts, file renames" },
   { key: "forming_events", label: "Form events", detail: "PR-bundle and commit-level granularities" },
+  { key: "extracting_p_features", label: "Extract P features", detail: "Comments, reviews, churn, and more" },
+  { key: "extracting_r_features", label: "Extract R features", detail: "File survival, later references, and more" },
+  { key: "scoring_p", label: "Score P", detail: "Attention score per event" },
+  { key: "scoring_r", label: "Score R", detail: "Salience score per event" },
+  { key: "classifying_divergence", label: "Classify divergence", detail: "P/R quadrant for each scored event" },
 ];
 
 const STAGE_LABELS: Record<string, string> = {
@@ -21,6 +26,17 @@ const STAGE_LABELS: Record<string, string> = {
   normalizing: "Normalizing",
   normalized: "Normalized",
   forming_events: "Forming candidate events",
+  formed_events: "Formed candidate events",
+  extracting_p_features: "Extracting P features",
+  extracted_p_features: "Extracted P features",
+  extracting_r_features: "Extracting R features",
+  extracted_r_features: "Extracted R features",
+  scoring_p: "Scoring P",
+  scored_p: "Scored P",
+  scoring_r: "Scoring R",
+  scored_r: "Scored R",
+  classifying_divergence: "Classifying divergence",
+  classified_divergence: "Classified divergence",
   done: "Complete",
 };
 
@@ -72,9 +88,9 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
       )}
 
       {isDone && safeName && (
-        <Panel className="mt-6 border-cyan-deep/30 bg-cyan-deep/[0.06] px-5 py-4 rise">
+        <Panel className="mt-6 border-indigo-deep/25 bg-indigo-deep/[0.05] px-5 py-4 rise">
           <p className="text-sm text-fg">Collection complete.</p>
-          <Link href={`/repos/${safeName}`} className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-cyan hover:underline">
+          <Link href={`/repos/${safeName}`} className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-indigo hover:underline">
             View repository <span aria-hidden="true">→</span>
           </Link>
         </Panel>
@@ -91,17 +107,17 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
                 <li key={stage.key} className="relative flex gap-4 pb-6 last:pb-0">
                   {i < STAGES.length - 1 && (
                     <span
-                      className={`absolute left-[7px] top-5 h-full w-px ${reached ? "bg-cyan-deep/40" : "bg-line"}`}
+                      className={`absolute left-[7px] top-5 h-full w-px ${reached ? "bg-indigo-deep/40" : "bg-line"}`}
                       aria-hidden="true"
                     />
                   )}
                   <span
                     className={`relative z-10 mt-1 h-[15px] w-[15px] shrink-0 rounded-full border-2 ${
                       active
-                        ? "border-cyan bg-cyan pulse-ring"
+                        ? "border-indigo bg-indigo pulse-ring"
                         : reached
-                          ? "border-cyan-deep bg-cyan-deep"
-                          : "border-line bg-ink-800"
+                          ? "border-indigo-deep bg-indigo-deep"
+                          : "border-line bg-surface-alt"
                     }`}
                   />
                   <div className="-mt-0.5">
@@ -124,7 +140,7 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
                       <span className="text-fg-dim">
                         {STAGE_LABELS[entry.stage] ?? entry.stage}
                         {"entity" in entry && "count" in entry && (
-                          <span className="text-cyan"> · {String(entry.count)} {String(entry.entity)}</span>
+                          <span className="text-indigo"> · {String(entry.count)} {String(entry.entity)}</span>
                         )}
                       </span>
                     </li>

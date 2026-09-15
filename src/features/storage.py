@@ -27,3 +27,24 @@ def insert_p_features(processed_conn: sqlite3.Connection, repo_id: int, rows: li
         ],
     )
     processed_conn.commit()
+
+
+_R_FEATURE_COLUMNS = ["maturity", "files_survived", "subsequent_modification_count", "releases_since_count", "later_references_count"]
+
+
+def insert_r_features(processed_conn: sqlite3.Connection, repo_id: int, rows: list[dict]) -> None:
+    """Same shape/idempotency as insert_p_features, for event_r_features —
+    see src/features/r_features.py."""
+    columns = ["event_id", "repo_id"]
+    for name in _R_FEATURE_COLUMNS:
+        columns += [name, f"{name}_status"]
+
+    processed_conn.execute("DELETE FROM event_r_features WHERE repo_id = ?", (repo_id,))
+    processed_conn.executemany(
+        f"INSERT INTO event_r_features ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
+        [
+            (r["event_id"], repo_id, *[r[key] for name in _R_FEATURE_COLUMNS for key in (name, f"{name}_status")])
+            for r in rows
+        ],
+    )
+    processed_conn.commit()

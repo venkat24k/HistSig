@@ -50,3 +50,23 @@ def test_normalize_repository_end_to_end(raw_conn, tmp_path):
         "SELECT is_revert, reverts_commit_hash FROM commit_annotations WHERE commit_hash = 'bbbb2222'"
     ).fetchone()
     assert revert_row == (1, "aaaa1111")
+
+
+def test_normalize_repository_is_safe_to_rerun(raw_conn, tmp_path):
+    # Regression test: re-running normalize against a repo that already
+    # has processed data used to raise sqlite3.IntegrityError, because
+    # insert_contributors deleted `contributors` while the previous run's
+    # commit_annotations rows still referenced those ids via
+    # commit_annotations.contributor_id -- a real bug that would crash
+    # every "analyze this repository again" (e.g. to pick up new commits)
+    # after the first run, not just a hypothetical.
+    _insert_commit(raw_conn, "aaaa1111", "The Octocat", "octocat@users.noreply.github.com")
+    raw_conn.commit()
+
+    processed_conn = connect(str(tmp_path / "processed.db"))
+    normalize_repository(raw_conn, processed_conn, repo_id=1)
+    summary = normalize_repository(raw_conn, processed_conn, repo_id=1)
+
+    assert summary["contributors"] == 1
+    assert processed_conn.execute("SELECT COUNT(*) FROM contributors").fetchone()[0] == 1
+    assert processed_conn.execute("SELECT COUNT(*) FROM commit_annotations").fetchone()[0] == 1

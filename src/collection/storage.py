@@ -145,8 +145,8 @@ def insert_pull_requests(conn: sqlite3.Connection, repo_id: int, pull_requests: 
                 id, repo_id, number, title, body, state, author_login, created_at,
                 merged_at, closed_at, updated_at, base_branch, head_branch, merge_commit_sha,
                 reviews_truncated, commits_truncated, review_comments_truncated, comments_truncated,
-                closing_issues_truncated, reaction_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                closing_issues_truncated, reaction_count, cross_references_truncated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, body=excluded.body, state=excluded.state,
                 author_login=excluded.author_login, created_at=excluded.created_at,
@@ -155,12 +155,13 @@ def insert_pull_requests(conn: sqlite3.Connection, repo_id: int, pull_requests: 
                 merge_commit_sha=excluded.merge_commit_sha,
                 reviews_truncated=excluded.reviews_truncated, commits_truncated=excluded.commits_truncated,
                 review_comments_truncated=excluded.review_comments_truncated, comments_truncated=excluded.comments_truncated,
-                closing_issues_truncated=excluded.closing_issues_truncated, reaction_count=excluded.reaction_count
+                closing_issues_truncated=excluded.closing_issues_truncated, reaction_count=excluded.reaction_count,
+                cross_references_truncated=excluded.cross_references_truncated
             """,
             (pr.id, repo_id, pr.number, pr.title, pr.body, pr.state, pr.author_login, pr.created_at,
              pr.merged_at, pr.closed_at, pr.updated_at, pr.base_branch, pr.head_branch, pr.merge_commit_sha,
              pr.reviews_truncated, pr.commits_truncated, pr.review_comments_truncated, pr.comments_truncated,
-             pr.closing_issues_truncated, pr.reaction_count),
+             pr.closing_issues_truncated, pr.reaction_count, pr.cross_references_truncated),
         )
 
         _replace_children(
@@ -203,6 +204,20 @@ def insert_pull_requests(conn: sqlite3.Connection, repo_id: int, pull_requests: 
             "DELETE FROM pr_closing_issues WHERE pr_id = ?", (pr.id,),
             "INSERT INTO pr_closing_issues (pr_id, issue_number) VALUES (?, ?)",
             [(pr.id, number) for number in pr.closing_issue_numbers],
+        )
+        # Deduplicated by source_number (pr_cross_references' primary key)
+        # since the same issue/PR could in principle appear twice if it
+        # referenced this PR more than once — only the first timestamp
+        # seen is kept, which is enough for a "was this referenced later"
+        # count and avoids a UNIQUE constraint failure on the second row.
+        cross_refs_by_source: dict[int, str | None] = {}
+        for source_number, referenced_at in pr.cross_references:
+            cross_refs_by_source.setdefault(source_number, referenced_at)
+        _replace_children(
+            conn,
+            "DELETE FROM pr_cross_references WHERE pr_id = ?", (pr.id,),
+            "INSERT INTO pr_cross_references (pr_id, source_number, referenced_at) VALUES (?, ?, ?)",
+            [(pr.id, number, referenced_at) for number, referenced_at in cross_refs_by_source.items()],
         )
     conn.commit()
 

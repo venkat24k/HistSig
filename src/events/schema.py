@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS candidate_events (
 CREATE INDEX IF NOT EXISTS idx_candidate_events_repo_granularity
     ON candidate_events(repo_id, granularity);
 
+-- Supports src/features/r_features.py's compute_subsequent_modification_count,
+-- which joins a candidate commit_hash back to its own commit_level event
+-- to read that commit's date. Without this, that join has nothing to use
+-- but a full table scan of candidate_events per lookup — the missing
+-- index that made R feature extraction stall on pallets/click (6,768
+-- events x a full scan each) before this was added.
+CREATE INDEX IF NOT EXISTS idx_candidate_events_repo_commit
+    ON candidate_events(repo_id, primary_commit_hash);
+
 -- Every commit belonging to an event, in whatever quantity that event's
 -- granularity implies (1 for a standalone-commit/commit-level event, 1+
 -- for a pr_bundle event). Commit hashes here are exactly what the raw
@@ -34,7 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_candidate_events_repo_granularity
 -- the default branch; see the pallets/click validation report) and that
 -- is expected, not an error, at this stage.
 CREATE TABLE IF NOT EXISTS event_commits (
-    event_id     INTEGER NOT NULL REFERENCES candidate_events(id),
+    event_id     INTEGER NOT NULL REFERENCES candidate_events(id) ON DELETE CASCADE,
     commit_hash  TEXT NOT NULL,
     PRIMARY KEY (event_id, commit_hash)
 );
