@@ -701,7 +701,7 @@ addendum records facts and decisions, not new rules.
   how this was decided; the frontend shows "too young to rank yet" for
   such an event instead of a score, while still showing its raw R feature
   values (nothing about raw evidence is hidden, only the ranking).
-- **Phase 4 (Divergence Analysis) — first pass done, not yet wired into
+- **Phase 4 (Divergence Analysis) — first pass done and now visible in
   the demo app's UI.** `src/divergence/` — `classify_divergence` labels
   every event that has *both* a non-null `is_high_p` and `is_high_r`
   (i.e. both axes actually got scored) into one of Section 3's four
@@ -710,10 +710,10 @@ addendum records facts and decisions, not new rules.
   event missing either axis is left unclassified rather than guessed at,
   same missing-data principle as everywhere else. Stored in
   `event_divergence` (`scripts/compute_divergence.py`, requires P and R
-  scores to already exist — and, since this session, always runs as part
-  of `run_full_pipeline`, see below). Run against all three real repos as
-  a first empirical look (not yet a validated finding — Section 11's
-  evaluation stage is what would check this against human judgment):
+  scores to already exist — and always runs as part of `run_full_pipeline`,
+  see below). Run against all three real repos as a first empirical look
+  (not yet a validated finding — Section 11's evaluation stage is what
+  would check this against human judgment):
   | repo | classified | Truly Important | Discussed but Forgotten | Silent but Critical | Routine Noise |
   |---|---|---|---|---|---|
   | markupsafe | 1646 | 58 | 106 | 107 | 1375 |
@@ -723,9 +723,104 @@ addendum records facts and decisions, not new rules.
   310 events) — the quadrant RQ3 cares about isn't empty, which is a
   necessary (not sufficient) condition for the framework being useful.
   venvdoctor is too small (14 classified events) to read anything into
-  its counts. The *data* is computed for every analyzed repo now; showing
-  it in the frontend UI (a quadrant filter/badge) is still the natural
-  next step if this direction continues.
+  its counts. Frontend: `GET .../events` accepts a `quadrant` filter (and
+  `GET .../divergence?granularity=...` returns the 4-way count summary);
+  the events list page shows a "Divergence" panel — four clickable cards
+  (count + description per quadrant, from `QUADRANT_LABELS`/
+  `QUADRANT_DESCRIPTIONS` in `frontend/app/lib/api.ts`) that both display
+  the repo's quadrant distribution at a glance and act as a quick filter;
+  event rows and the event detail page show a quadrant badge (reusing
+  `Badge`'s tone system — green for Truly Important, amber for Discussed
+  but Forgotten matching P's own color, violet for Silent but Critical
+  matching R's own color, neutral gray for Routine Noise) plus a one-line
+  description of what that quadrant means.
+- **P/R concentration heatmap added to the events list page** — a finer
+  view of RQ1 ("how strongly do perceived significance and historical
+  salience correlate?") than the 4-quadrant split above: every event with
+  both scores computed is binned into a 10x10 grid over `[0,1] x [0,1]`
+  (`src/api/repositories.py: get_pr_heatmap`, `GET .../pr-heatmap`), and
+  the frontend renders it as a genuine heatmap — sequential single-hue
+  (blue, light->dark, the design system's documented sequential ramp —
+  see the `dataviz` skill) on a log scale (`log1p(count)`, since a few
+  cells otherwise dwarf the rest — markupsafe's own distribution runs
+  from 0 to 64 in a single cell), a hover readout giving the exact P/R
+  range and count per cell, a light->dark legend, and a "Show as table"
+  toggle exposing the same grid as plain numbers (the skill's
+  accessibility-pass requirement: a table view must exist alongside every
+  chart). Purely a read/aggregation of already-computed P/R scores —
+  introduces no new scoring methodology, same as divergence classification.
+- **Real code-diff viewer added to the event detail page — evidence
+  inspection with no LLM involved, per CLAUDE.md Section 8/10's
+  "inspect evidence behind a ranking" / Evidence-First Principle.**
+  `src/collection/git_collector.py: get_commit_diff(clone_dir, commit_hash)`
+  runs `git show --no-color --format= <hash>` directly against the local
+  clone `ensure_local_clone` already keeps under `data/raw/_clones/` —
+  deliberately a read-on-demand path, not a Stage 1 collection step or a
+  new database column: diffs can be large and most are never looked at,
+  so nothing is stored, the clone is regenerated evidence enough
+  (Section 21: correctness/simplicity before scale). Returns `None` when
+  the clone directory is missing; truncates very large diffs and reports
+  `truncated` rather than silently cutting one off. `src/api/repositories.py:
+  get_commit_diff(safe_name, commit_hash)` validates the hash against a
+  plain hex pattern *before* it ever reaches a subprocess call (rules out
+  a crafted value like `--upload-pack=...` being read as a git option)
+  and confirms the hash is actually one of this repository's own
+  collected commits before shelling out at all. New endpoint: `GET
+  .../commits/{commit_hash}/diff`. Frontend: each commit in the event
+  detail page's commit list that was found locally (the same check
+  already used for "not in collected history" there) gets a "View diff"
+  toggle that fetches the diff on click and renders it with basic +/-/hunk
+  coloring in a scrollable monospace block — real code, not a summary,
+  and nothing about it depends on or ever calls an LLM.
+- **First and only LLM integration in the codebase so far: an optional
+  "explain this diff" feature, exactly the flow CLAUDE.md Section 9
+  already anticipated** (`Repository evidence -> Explanation`, evidence
+  retrieved first, then handed to the LLM to summarize — never
+  `Repository -> LLM -> Unverified story`, Section 10). Scope
+  deliberately narrow: explaining one already-real diff, nothing about
+  scoring, ranking, or divergence classification. `src/llm/groq_client.py:
+  explain_diff(commit_message, diff_text)` calls Groq's free-tier,
+  OpenAI-compatible chat completions API (`GROQ_API_KEY`, default model
+  `openai/gpt-oss-120b`, both from `.env.example`) — Groq was picked over
+  Gemini and a fully local Ollama setup explicitly by the user when
+  offered the choice (fast, generous free tier, no local hardware
+  dependency), not chosen unilaterally (Section 25: adding an LLM
+  dependency needs approval). The default model went through one real
+  fix after first real-key testing: the original default
+  (`llama-3.3-70b-versatile`) had been retired from Groq's free tier and
+  404ed with `model_not_found`; the live `GET
+  https://api.groq.com/openai/v1/models` list was checked rather than
+  guessed at a replacement, and `openai/gpt-oss-120b` was picked from
+  what was actually still available. That model is also a *reasoning*
+  model — it spends part of its `max_tokens` budget on a hidden
+  reasoning trace before the visible answer, unlike a plain chat model —
+  which silently produced empty explanations (`finish_reason: "length"`,
+  empty `message.content`) at this module's original `max_tokens: 300`;
+  raised to 600 after confirming against a real request that finish
+  reason came back `"stop"` (a complete answer) at that budget. **Lesson
+  for next time a Groq model is swapped in: verify both model
+  availability and `max_tokens` sufficiency against a real request before
+  trusting a default, the same real-data-first discipline this project
+  already applies to P/R feature thresholds — a "the API accepted the
+  request" 200 status is not the same as "the response actually contains
+  the answer."** The system prompt is the actual Section 10
+  enforcement point: the model is given only the real commit message and
+  real diff already shown elsewhere in the UI and is explicitly told not
+  to invent motivation, issue numbers, or context beyond that evidence,
+  and to say so plainly when the diff alone doesn't make the reason for
+  a change clear. `src/api/repositories.py: explain_commit_diff` reuses
+  `get_commit_diff` for the evidence and is purely additive — every
+  collection/normalization/feature/scoring/divergence path in the
+  codebase is fully testable and runnable with `GROQ_API_KEY` unset
+  (Section 9's "HistSig must remain independently testable without any
+  LLM in the loop"), verified by the existing test suite never setting
+  that variable. New endpoint: `POST .../commits/{hash}/explain`.
+  Frontend: an "Explain this diff (AI, optional)" link appears once a
+  diff is expanded; the result renders in a visually distinct panel
+  labeled "AI explanation — generated from the diff above, not verified
+  evidence" (Section 10: documented evidence, derived evidence, and
+  AI-derived inference must never blur together) rather than looking
+  like part of the collected evidence itself.
 - **`src/pipeline.py: run_full_pipeline` now runs the complete research
   chain by default for any repository, not just collection.**
   `DEFAULT_STAGES` grew from `("collect", "normalize", "events")` to
@@ -794,7 +889,7 @@ addendum records facts and decisions, not new rules.
   high-P/high-R/rest event_type-grouped view described above. Design
   tokens live in `frontend/app/globals.css`; shared components in
   `frontend/app/components/ui.tsx`.
-- Test suite: 245 tests, all offline (no network calls, in-memory/temp
+- Test suite: 270 tests, all offline (no network calls, in-memory/temp
   SQLite, hand-built fixtures for tricky logic). Run with `pytest` from
   the project root.
 - **All three test repositories (`pallets/click`, `pallets/markupsafe`,

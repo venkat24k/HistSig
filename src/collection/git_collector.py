@@ -91,6 +91,56 @@ def ensure_local_clone(remote_url: str, clone_dir: str, timeout_seconds: int = 3
     return str(clone_path)
 
 
+def get_commit_diff(clone_dir: str, commit_hash: str, max_chars: int = 200_000) -> dict | None:
+    """The real unified diff for one commit, read directly from the local
+    git clone on demand — never stored in the database. This is
+    deliberately a read path, not a Stage 1 collection step: diffs can be
+    large, most are never looked at, and the local clone `ensure_local_clone`
+    already keeps around is sufficient evidence to regenerate one whenever
+    a user actually wants to inspect it (CLAUDE.md Section 21: correctness/
+    simplicity before scale — don't pay the storage cost until there's a
+    concrete need). This is exactly the "inspect evidence behind a
+    ranking" capability from CLAUDE.md Section 8/10 — real code, no LLM
+    involved in producing or interpreting it.
+
+    Returns `None` if the clone directory doesn't exist locally (a repo
+    collected before its clone was kept, or the clone was since removed)
+    — the caller is expected to only call this for a commit hash it
+    already knows is present in the raw `commits` table, so a `None` here
+    means "we have the metadata but not the clone to regenerate the diff
+    from," the same kind of gap `files_survived`/`compute_diff` elsewhere
+    in this project already represents as a real, named absence rather
+    than an error.
+
+    `--format=""` on `git show` suppresses the commit-message header
+    (already shown elsewhere in the UI from the `commits` table), leaving
+    just the diff itself. A merge commit still produces real output here
+    (git's own default condensed "diff --cc" against both parents) —
+    deliberately not special-cased to match the plain-diff case, since
+    that's still real, inspectable evidence, just of a different shape.
+
+    Truncated to `max_chars` (a very large or generated-file diff could
+    otherwise return megabytes) — `truncated` tells the caller so the UI
+    can say so rather than silently showing a cut-off diff as if it were
+    complete."""
+    clone_path = Path(clone_dir)
+    if not (clone_path / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(clone_path), "show", "--no-color", "--format=", commit_hash],
+            capture_output=True, text=True, timeout=30, env=_GIT_ENV, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+
+    diff_text = result.stdout.lstrip("\n")
+    truncated = len(diff_text) > max_chars
+    return {"diff": diff_text[:max_chars] if truncated else diff_text, "truncated": truncated}
+
+
 def _looks_like_remote(path_to_repo: str) -> bool:
     return "://" in path_to_repo or path_to_repo.startswith("git@")
 

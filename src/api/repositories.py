@@ -4,11 +4,19 @@ Kept separate from main.py's route wiring so the query logic is testable
 without spinning up the FastAPI app.
 """
 
+import re
 import sqlite3
 from pathlib import Path
 
 DATA_DIR = Path("data")
 _RAW_COUNT_TABLES = ("commits", "issues", "pull_requests", "releases")
+
+# Matches src/divergence/classify.py's QUADRANTS values — kept as a
+# separate tuple here for the same decoupling reason as _P_FEATURE_NAMES/
+# _R_FEATURE_NAMES above.
+_QUADRANTS = ("truly_important", "discussed_but_forgotten", "silent_but_critical", "routine_noise")
+
+_COMMIT_HASH_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 # Matches src/features/storage.py's _FEATURE_COLUMNS — kept as a separate
 # list here (rather than importing it) since the API only ever reads this
@@ -151,6 +159,147 @@ def _r_score_dict(processed_conn: sqlite3.Connection, event_id: int) -> dict | N
     return {"r_score": row[0], "features_used": row[1], "is_high_r": None if row[2] is None else bool(row[2])}
 
 
+def _divergence_dict(processed_conn: sqlite3.Connection, event_id: int) -> dict | None:
+    """Returns {"quadrant", "p_score", "r_score"} or None if this event
+    hasn't been classified (either axis not scored, or Phase 4 hasn't run
+    for this repo yet — see src/divergence/classify.py)."""
+    try:
+        row = processed_conn.execute(
+            "SELECT quadrant, p_score, r_score FROM event_divergence WHERE event_id = ?", (event_id,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    return {"quadrant": row[0], "p_score": row[1], "r_score": row[2]}
+
+
+def get_divergence_summary(safe_name: str, granularity: str) -> dict:
+    """{"granularity", "counts": {quadrant: count}} for every one of
+    CLAUDE.md Section 3's four quadrants (always all four keys, 0 when a
+    quadrant is empty) — powers the frontend's divergence overview and its
+    click-to-filter links. Scoped by granularity like P/R thresholds
+    already are, since the event population differs between them."""
+    raw_conn, processed_conn = _open(safe_name)
+    if processed_conn is None:
+        raise RepositoryNotFound(f"{safe_name} (no processed data yet)")
+    repo_id = raw_conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()[0]
+
+    counts = {q: 0 for q in _QUADRANTS}
+    try:
+        rows = processed_conn.execute(
+            "SELECT quadrant, COUNT(*) FROM event_divergence WHERE repo_id = ? AND granularity = ? GROUP BY quadrant",
+            (repo_id, granularity),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    for quadrant, count in rows:
+        counts[quadrant] = count
+    return {"granularity": granularity, "counts": counts}
+
+
+def get_pr_heatmap(safe_name: str, granularity: str, bins: int = 10) -> dict:
+    """2D binned event counts across the P-score x R-score plane, for
+    every event that has *both* scores computed — the same population
+    `classify_divergence` draws from, just at finer granularity than its
+    4-quadrant split. Where the 4 quadrants only say "high or low per
+    axis," this shows the actual shape of the P/R relationship (RQ1: "how
+    strongly do perceived significance and historical salience
+    correlate?") — a diagonal concentration means the two broadly agree,
+    a concentration in one corner means they diverge in a specific,
+    visible direction. Purely a read/aggregation of already-computed
+    scores; introduces no new scoring methodology.
+
+    Bins are equal-width over `[0, 1]` (both scores are already
+    percentile ranks in that range — see `src/scoring/ranking.py`); a
+    score of exactly `1.0` is clamped into the last bin rather than
+    overflowing past it. Always returns all `bins * bins` cells
+    (including empty ones at count 0), since a sparse response would
+    force the frontend to reconstruct the full grid anyway."""
+    raw_conn, processed_conn = _open(safe_name)
+    if processed_conn is None:
+        raise RepositoryNotFound(f"{safe_name} (no processed data yet)")
+    repo_id = raw_conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()[0]
+
+    try:
+        rows = processed_conn.execute(
+            """
+            SELECT ps.p_score, rs.r_score
+            FROM event_p_scores ps
+            JOIN event_r_scores rs ON rs.event_id = ps.event_id
+            WHERE ps.repo_id = ? AND ps.granularity = ? AND ps.p_score IS NOT NULL AND rs.r_score IS NOT NULL
+            """,
+            (repo_id, granularity),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+
+    grid = [[0] * bins for _ in range(bins)]
+    for p_score, r_score in rows:
+        p_bin = min(int(p_score * bins), bins - 1)
+        r_bin = min(int(r_score * bins), bins - 1)
+        grid[p_bin][r_bin] += 1
+
+    cells = [{"p_bin": p, "r_bin": r, "count": grid[p][r]} for p in range(bins) for r in range(bins)]
+    return {"granularity": granularity, "bins": bins, "total": len(rows), "cells": cells}
+
+
+def get_commit_diff(safe_name: str, commit_hash: str) -> dict | None:
+    """The real diff for one commit, read on demand from the repository's
+    local git clone (never stored in the database — see
+    src/collection/git_collector.py: get_commit_diff). This is the
+    Evidence-First Principle (CLAUDE.md Section 10) applied directly: real
+    code, no LLM involved.
+
+    `commit_hash` is validated against a plain hex pattern *before* it
+    ever reaches a subprocess call, even though it's passed as an argv
+    element (not through a shell, so no shell-injection risk exists
+    either way) — this specifically rules out a crafted value like
+    "--upload-pack=..." being misread by git as an option rather than a
+    revision. Also confirms the hash belongs to this repository's own
+    collected history before shelling out at all, the same check the
+    frontend already uses to decide whether a commit is available to
+    link to in the first place."""
+    if not _COMMIT_HASH_RE.match(commit_hash):
+        return None
+
+    raw_conn, _ = _open(safe_name)
+    known = raw_conn.execute("SELECT 1 FROM commits WHERE hash = ?", (commit_hash,)).fetchone()
+    if known is None:
+        return None
+
+    from src.collection.git_collector import get_commit_diff as _get_commit_diff
+
+    clone_dir = DATA_DIR / "raw" / "_clones" / safe_name
+    return _get_commit_diff(str(clone_dir), commit_hash)
+
+
+def explain_commit_diff(safe_name: str, commit_hash: str) -> dict | None:
+    """Fetches the exact same real diff `get_commit_diff` returns, then
+    asks the optional LLM layer (src/llm/groq_client.py) to explain it —
+    purely additive: nothing about collection, feature extraction,
+    scoring, or divergence classification depends on this succeeding, or
+    even on `GROQ_API_KEY` being set at all (CLAUDE.md Section 9: HistSig
+    must remain independently testable without any LLM in the loop).
+    Returns `None` when the diff itself isn't available, exactly like
+    `get_commit_diff` — nothing to explain without real evidence to
+    ground it in. Raises `RuntimeError`/`requests.HTTPError` (from
+    `explain_diff`) when the diff *is* available but the LLM call itself
+    fails; left for the API layer to turn into a clean HTTP response."""
+    diff_result = get_commit_diff(safe_name, commit_hash)
+    if diff_result is None:
+        return None
+
+    raw_conn, _ = _open(safe_name)
+    row = raw_conn.execute("SELECT message FROM commits WHERE hash = ?", (commit_hash,)).fetchone()
+    commit_message = row[0] if row else None
+
+    from src.llm.groq_client import explain_diff
+
+    explanation = explain_diff(commit_message, diff_result["diff"])
+    return {"explanation": explanation}
+
+
 def _thresholds_for_granularity(processed_conn: sqlite3.Connection, repo_id: int, granularity: str, table: str) -> dict:
     """{event_type: {"threshold_score", "group_size", "top_percentile"}} for
     every scored group in this granularity — lets the UI show *why* a given
@@ -179,6 +328,7 @@ def list_events(
     offset: int,
     high_p: bool | None = None,
     high_r: bool | None = None,
+    quadrant: str | None = None,
 ) -> dict:
     raw_conn, processed_conn = _open(safe_name)
     if processed_conn is None:
@@ -206,6 +356,14 @@ def list_events(
         joins.append("JOIN event_r_scores rs ON rs.event_id = e.id")
         where += " AND rs.is_high_r = ?"
         params.append(1 if high_r else 0)
+    # Independent of high_p/high_r above -- quadrant already implies a
+    # specific (is_high_p, is_high_r) pair, so combining it with those
+    # filters is redundant, not conflicting, when consistent, and simply
+    # returns zero events when it isn't; no special-casing needed.
+    if quadrant is not None:
+        joins.append("JOIN event_divergence dv ON dv.event_id = e.id")
+        where += " AND dv.quadrant = ?"
+        params.append(quadrant)
     join = " ".join(joins)
 
     # A requested axis's score table may not exist yet for this repo
@@ -235,6 +393,7 @@ def list_events(
             "title": r[4], "author": _author_dict(processed_conn, r[5]), "occurred_at": r[6],
             "p_score": _p_score_dict(processed_conn, r[0]),
             "r_score": _r_score_dict(processed_conn, r[0]),
+            "divergence": _divergence_dict(processed_conn, r[0]),
         }
         for r in rows
     ]
@@ -336,4 +495,5 @@ def get_event(safe_name: str, event_id: int) -> dict:
         "p_score": _p_score_dict(processed_conn, event_id_),
         "r_features": _r_features_dict(processed_conn, event_id_),
         "r_score": _r_score_dict(processed_conn, event_id_),
+        "divergence": _divergence_dict(processed_conn, event_id_),
     }

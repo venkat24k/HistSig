@@ -40,6 +40,10 @@ const BADGE_TONES: Record<string, string> = {
   closed: "border-red/20 text-red bg-red/[0.07]",
   "high-p": "border-amber/30 text-amber bg-amber/[0.1]",
   "high-r": "border-violet-deep/40 text-violet-deep bg-violet-deep/[0.12]",
+  truly_important: "border-green/30 text-green bg-green/[0.1]",
+  discussed_but_forgotten: "border-amber/30 text-amber bg-amber/[0.1]",
+  silent_but_critical: "border-violet-deep/40 text-violet-deep bg-violet-deep/[0.12]",
+  routine_noise: "border-line text-fg-faint bg-surface-alt",
 };
 
 export function Badge({ children, tone }: { children: ReactNode; tone?: string }) {

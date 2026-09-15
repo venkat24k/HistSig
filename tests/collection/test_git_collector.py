@@ -1,4 +1,4 @@
-from src.collection.git_collector import collect_git_history, ensure_local_clone
+from src.collection.git_collector import collect_git_history, ensure_local_clone, get_commit_diff
 
 
 def test_collect_git_history_returns_one_record_per_commit(tmp_git_repo):
@@ -110,3 +110,41 @@ def test_collect_git_history_rejects_remote_looking_urls():
         collect_git_history("https://github.com/pallets/click")
     with pytest.raises(ValueError, match="local path"):
         collect_git_history("git@github.com:pallets/click.git")
+
+
+def test_get_commit_diff_returns_real_diff_text(tmp_git_repo):
+    commits = collect_git_history(str(tmp_git_repo))
+    second_commit = commits[1]  # "Update a.txt, add b.txt"
+
+    result = get_commit_diff(str(tmp_git_repo), second_commit.hash)
+
+    assert result is not None
+    assert result["truncated"] is False
+    assert "diff --git a/a.txt b/a.txt" in result["diff"]
+    assert "diff --git a/b.txt b/b.txt" in result["diff"]
+    assert "+second line" in result["diff"]
+    assert "+new file" in result["diff"]
+    # --format="" suppresses the commit message header -- only the diff itself.
+    assert "Update a.txt, add b.txt" not in result["diff"]
+
+
+def test_get_commit_diff_none_when_clone_missing(tmp_path):
+    result = get_commit_diff(str(tmp_path / "does-not-exist"), "abc1234")
+
+    assert result is None
+
+
+def test_get_commit_diff_none_for_unknown_hash(tmp_git_repo):
+    result = get_commit_diff(str(tmp_git_repo), "0000000000000000000000000000000000000000")
+
+    assert result is None
+
+
+def test_get_commit_diff_truncates_large_diffs(tmp_git_repo):
+    commits = collect_git_history(str(tmp_git_repo))
+    second_commit = commits[1]
+
+    result = get_commit_diff(str(tmp_git_repo), second_commit.hash, max_chars=10)
+
+    assert result["truncated"] is True
+    assert len(result["diff"]) == 10

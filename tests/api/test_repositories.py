@@ -176,6 +176,260 @@ def test_list_events_combined_high_p_and_high_r_filters_when_only_r_computed(dat
     assert result["events"] == []
 
 
+def test_list_events_filters_by_quadrant(data_dir):
+    from src.divergence.schema import create_schema as create_divergence_schema
+    from src.processing.schema import connect as connect_processed
+
+    seed_repo(data_dir, "o__r")
+    event_id = repositories.list_events("o__r", "pr_bundle", None, 50, 0)["events"][0]["id"]
+
+    processed_conn = connect_processed(str(data_dir / "processed" / "o__r.db"))
+    create_divergence_schema(processed_conn)
+    processed_conn.execute(
+        "INSERT INTO event_divergence (event_id, repo_id, granularity, event_type, p_score, r_score, is_high_p, is_high_r, quadrant) "
+        "VALUES (?, 1, 'pr_bundle', 'pull_request', 0.9, 0.8, 1, 1, 'truly_important')",
+        (event_id,),
+    )
+    processed_conn.commit()
+
+    matching = repositories.list_events("o__r", "pr_bundle", None, 50, 0, quadrant="truly_important")
+    assert matching["total"] == 1
+    assert matching["events"][0]["divergence"] == {"quadrant": "truly_important", "p_score": 0.9, "r_score": 0.8}
+
+    other = repositories.list_events("o__r", "pr_bundle", None, 50, 0, quadrant="routine_noise")
+    assert other["total"] == 0
+
+
+def test_list_events_quadrant_filter_returns_empty_when_divergence_not_computed(data_dir):
+    seed_repo(data_dir, "o__r")
+
+    result = repositories.list_events("o__r", "pr_bundle", None, 50, 0, quadrant="truly_important")
+
+    assert result["total"] == 0
+    assert result["events"] == []
+
+
+def test_list_events_divergence_is_none_when_not_classified(data_dir):
+    seed_repo(data_dir, "o__r")
+
+    result = repositories.list_events("o__r", "pr_bundle", None, 50, 0)
+
+    assert result["events"][0]["divergence"] is None
+
+
+def test_get_divergence_summary_counts_all_four_quadrants(data_dir):
+    from src.divergence.schema import create_schema as create_divergence_schema
+    from src.processing.schema import connect as connect_processed
+
+    seed_repo(data_dir, "o__r")
+    event_id = repositories.list_events("o__r", "pr_bundle", None, 50, 0)["events"][0]["id"]
+
+    processed_conn = connect_processed(str(data_dir / "processed" / "o__r.db"))
+    create_divergence_schema(processed_conn)
+    processed_conn.execute(
+        "INSERT INTO event_divergence (event_id, repo_id, granularity, event_type, p_score, r_score, is_high_p, is_high_r, quadrant) "
+        "VALUES (?, 1, 'pr_bundle', 'pull_request', 0.9, 0.8, 1, 1, 'truly_important')",
+        (event_id,),
+    )
+    processed_conn.commit()
+
+    summary = repositories.get_divergence_summary("o__r", "pr_bundle")
+
+    assert summary == {
+        "granularity": "pr_bundle",
+        "counts": {
+            "truly_important": 1, "discussed_but_forgotten": 0,
+            "silent_but_critical": 0, "routine_noise": 0,
+        },
+    }
+
+
+def test_get_divergence_summary_all_zero_when_not_computed(data_dir):
+    seed_repo(data_dir, "o__r")
+
+    summary = repositories.get_divergence_summary("o__r", "pr_bundle")
+
+    assert summary["counts"] == {
+        "truly_important": 0, "discussed_but_forgotten": 0,
+        "silent_but_critical": 0, "routine_noise": 0,
+    }
+
+
+def _insert_scored_event(processed_conn, event_id, repo_id, p_score, r_score, granularity="pr_bundle"):
+    processed_conn.execute(
+        "INSERT INTO candidate_events (id, repo_id, granularity, event_type, source_pr_number, primary_commit_hash, title, occurred_at) "
+        "VALUES (?, ?, ?, 'pull_request', NULL, NULL, 't', '2024-01-01')",
+        (event_id, repo_id, granularity),
+    )
+    processed_conn.execute(
+        "INSERT INTO event_p_scores (event_id, repo_id, granularity, event_type, p_score, features_used, is_high_p) "
+        "VALUES (?, ?, ?, 'pull_request', ?, 1, 0)",
+        (event_id, repo_id, granularity, p_score),
+    )
+    processed_conn.execute(
+        "INSERT INTO event_r_scores (event_id, repo_id, granularity, event_type, r_score, features_used, is_high_r) "
+        "VALUES (?, ?, ?, 'pull_request', ?, 1, 0)",
+        (event_id, repo_id, granularity, r_score),
+    )
+
+
+def test_get_pr_heatmap_bins_events_by_p_and_r_score(data_dir):
+    from src.processing.schema import connect as connect_processed
+    from src.scoring.schema import create_r_schema as create_r_scoring_schema
+    from src.scoring.schema import create_schema as create_p_scoring_schema
+
+    seed_repo(data_dir, "o__r")
+    processed_conn = connect_processed(str(data_dir / "processed" / "o__r.db"))
+    create_p_scoring_schema(processed_conn)
+    create_r_scoring_schema(processed_conn)
+    # bins=10: 0.05 -> bin 0, 0.95 -> bin 9, and a second event landing in
+    # the exact same cell to verify counts accumulate rather than overwrite.
+    _insert_scored_event(processed_conn, 101, 1, p_score=0.05, r_score=0.95)
+    _insert_scored_event(processed_conn, 102, 1, p_score=0.06, r_score=0.91)
+    _insert_scored_event(processed_conn, 103, 1, p_score=1.0, r_score=1.0)  # exact 1.0 clamps into the last bin
+    processed_conn.commit()
+
+    result = repositories.get_pr_heatmap("o__r", "pr_bundle", bins=10)
+
+    assert result["bins"] == 10
+    assert result["total"] == 3
+    cells_by_pos = {(c["p_bin"], c["r_bin"]): c["count"] for c in result["cells"]}
+    assert len(result["cells"]) == 100  # full grid, including empty cells
+    assert cells_by_pos[(0, 9)] == 2  # the two low-P/high-R events share a cell
+    assert cells_by_pos[(9, 9)] == 1  # the (1.0, 1.0) event clamps into the last bin, not bin 10
+    assert cells_by_pos[(5, 5)] == 0  # an empty cell is still present, at 0
+
+
+def test_get_pr_heatmap_excludes_events_missing_either_score(data_dir):
+    from src.processing.schema import connect as connect_processed
+    from src.scoring.schema import create_r_schema as create_r_scoring_schema
+    from src.scoring.schema import create_schema as create_p_scoring_schema
+
+    seed_repo(data_dir, "o__r")
+    processed_conn = connect_processed(str(data_dir / "processed" / "o__r.db"))
+    create_p_scoring_schema(processed_conn)
+    create_r_scoring_schema(processed_conn)
+    _insert_scored_event(processed_conn, 101, 1, p_score=0.5, r_score=0.5)
+    # An event with a P score but no R score row at all -- must not appear.
+    processed_conn.execute(
+        "INSERT INTO candidate_events (id, repo_id, granularity, event_type, source_pr_number, primary_commit_hash, title, occurred_at) "
+        "VALUES (102, 1, 'pr_bundle', 'pull_request', NULL, NULL, 't', '2024-01-01')"
+    )
+    processed_conn.execute(
+        "INSERT INTO event_p_scores (event_id, repo_id, granularity, event_type, p_score, features_used, is_high_p) "
+        "VALUES (102, 1, 'pr_bundle', 'pull_request', 0.9, 1, 1)"
+    )
+    processed_conn.commit()
+
+    result = repositories.get_pr_heatmap("o__r", "pr_bundle")
+
+    assert result["total"] == 1
+
+
+def test_get_pr_heatmap_empty_when_not_scored(data_dir):
+    seed_repo(data_dir, "o__r")
+
+    result = repositories.get_pr_heatmap("o__r", "pr_bundle")
+
+    assert result["total"] == 0
+    assert all(c["count"] == 0 for c in result["cells"])
+    assert len(result["cells"]) == 100
+
+
+def test_get_commit_diff_returns_none_for_invalid_hash_format(data_dir):
+    seed_repo(data_dir, "o__r")
+
+    assert repositories.get_commit_diff("o__r", "not-a-hash!") is None
+    assert repositories.get_commit_diff("o__r", "") is None
+    assert repositories.get_commit_diff("o__r", "--upload-pack=x") is None
+
+
+def test_get_commit_diff_returns_none_for_unknown_commit(data_dir):
+    seed_repo(data_dir, "o__r")
+
+    assert repositories.get_commit_diff("o__r", "0000000000000000000000000000000000000000") is None
+
+
+def test_get_commit_diff_returns_real_diff_for_known_commit(data_dir):
+    import sqlite3
+    import subprocess
+
+    seed_repo(data_dir, "o__r")
+
+    clone_dir = data_dir / "raw" / "_clones" / "o__r"
+    clone_dir.mkdir(parents=True)
+    run = lambda *args: subprocess.run(["git", "-C", str(clone_dir), *args], check=True, capture_output=True)
+    run("init", "-b", "main")
+    run("config", "user.name", "Alice")
+    run("config", "user.email", "alice@example.com")
+    (clone_dir / "a.txt").write_text("hello\n")
+    run("add", "a.txt")
+    run("commit", "-m", "Initial commit")
+    real_hash = subprocess.run(
+        ["git", "-C", str(clone_dir), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    # seed_repo's commits row uses hash 'c1' -- point it at the real
+    # commit just created in the clone so the "known to this repo" check
+    # and the actual git lookup agree.
+    raw_conn = sqlite3.connect(str(data_dir / "raw" / "o__r.db"))
+    raw_conn.execute("UPDATE commits SET hash = ? WHERE hash = 'c1'", (real_hash,))
+    raw_conn.commit()
+
+    result = repositories.get_commit_diff("o__r", real_hash)
+
+    assert result is not None
+    assert "diff --git a/a.txt b/a.txt" in result["diff"]
+
+
+def test_explain_commit_diff_returns_none_when_diff_not_available(data_dir):
+    seed_repo(data_dir, "o__r")
+
+    result = repositories.explain_commit_diff("o__r", "0000000000000000000000000000000000000000")
+
+    assert result is None
+
+
+def test_explain_commit_diff_passes_real_diff_and_commit_message_to_llm(data_dir, monkeypatch):
+    import sqlite3
+    import subprocess
+
+    import src.llm.groq_client as groq_client
+
+    seed_repo(data_dir, "o__r")
+    clone_dir = data_dir / "raw" / "_clones" / "o__r"
+    clone_dir.mkdir(parents=True)
+    run = lambda *args: subprocess.run(["git", "-C", str(clone_dir), *args], check=True, capture_output=True)
+    run("init", "-b", "main")
+    run("config", "user.name", "Alice")
+    run("config", "user.email", "alice@example.com")
+    (clone_dir / "a.txt").write_text("hello\n")
+    run("add", "a.txt")
+    run("commit", "-m", "Initial commit")
+    real_hash = subprocess.run(
+        ["git", "-C", str(clone_dir), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    raw_conn = sqlite3.connect(str(data_dir / "raw" / "o__r.db"))
+    raw_conn.execute("UPDATE commits SET hash = ?, message = 'Initial commit' WHERE hash = 'c1'", (real_hash,))
+    raw_conn.commit()
+
+    captured = {}
+
+    def fake_explain_diff(commit_message, diff_text, session=None, model=None):
+        captured["commit_message"] = commit_message
+        captured["diff_text"] = diff_text
+        return "This adds a.txt."
+
+    monkeypatch.setattr(groq_client, "explain_diff", fake_explain_diff)
+
+    result = repositories.explain_commit_diff("o__r", real_hash)
+
+    assert result == {"explanation": "This adds a.txt."}
+    assert captured["commit_message"] == "Initial commit"
+    assert "diff --git a/a.txt b/a.txt" in captured["diff_text"]
+
+
 def test_get_event_includes_commits_and_pr_detail(data_dir):
     seed_repo(data_dir, "o__r")
     event_id = repositories.list_events("o__r", "pr_bundle", None, 50, 0)["events"][0]["id"]

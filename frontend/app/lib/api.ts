@@ -16,6 +16,28 @@ export type EventAuthor = { name: string | null; github_login: string | null; is
 export type PScore = { p_score: number | null; features_used: number; is_high_p: boolean | null } | null;
 export type RScore = { r_score: number | null; features_used: number; is_high_r: boolean | null } | null;
 
+export type Quadrant = "truly_important" | "discussed_but_forgotten" | "silent_but_critical" | "routine_noise";
+
+export type Divergence = { quadrant: Quadrant; p_score: number; r_score: number } | null;
+
+export const QUADRANTS: Quadrant[] = ["truly_important", "discussed_but_forgotten", "silent_but_critical", "routine_noise"];
+
+export const QUADRANT_LABELS: Record<Quadrant, string> = {
+  truly_important: "Truly Important",
+  discussed_but_forgotten: "Discussed but Forgotten",
+  silent_but_critical: "Silent but Critical",
+  routine_noise: "Routine Noise",
+};
+
+export const QUADRANT_DESCRIPTIONS: Record<Quadrant, string> = {
+  truly_important: "High attention at the time, and lasting salience.",
+  discussed_but_forgotten: "Substantial attention at the time, little lasting salience.",
+  silent_but_critical: "Little attention at the time, became important later.",
+  routine_noise: "Little attention at the time, and little lasting salience.",
+};
+
+export type DivergenceSummary = { granularity: string; counts: Record<Quadrant, number> };
+
 export type EventSummary = {
   id: number;
   event_type: string;
@@ -26,6 +48,7 @@ export type EventSummary = {
   occurred_at: string;
   p_score: PScore;
   r_score: RScore;
+  divergence: Divergence;
 };
 
 export type GroupThreshold = { threshold_score: number | null; group_size: number; top_percentile: number };
@@ -82,6 +105,13 @@ export type EventDetail = EventSummary & {
   r_features: RFeatures;
 };
 
+export type CommitDiff = { diff: string; truncated: boolean };
+
+export type DiffExplanation = { explanation: string };
+
+export type HeatmapCell = { p_bin: number; r_bin: number; count: number };
+export type PRHeatmap = { granularity: string; bins: number; total: number; cells: HeatmapCell[] };
+
 export type JobLogEntry = { stage: string; at: string; [key: string]: unknown };
 
 export type Job = {
@@ -103,7 +133,16 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    // FastAPI's HTTPException bodies are {"detail": "..."} -- surface
+    // that plain message when present instead of the raw JSON blob.
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body);
+      if (typeof parsed?.detail === "string") detail = parsed.detail;
+    } catch {
+      // not JSON -- fall through and use the raw body text
+    }
+    throw new Error(detail || `${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<T>;
 }
@@ -118,16 +157,28 @@ export const api = {
     limit = 25,
     eventType?: string | null,
     highP?: boolean | null,
-    highR?: boolean | null
+    highR?: boolean | null,
+    quadrant?: Quadrant | null
   ) => {
     const q = new URLSearchParams({ granularity, limit: String(limit), offset: String(offset) });
     if (eventType) q.set("event_type", eventType);
     if (highP !== null && highP !== undefined) q.set("high_p", String(highP));
     if (highR !== null && highR !== undefined) q.set("high_r", String(highR));
+    if (quadrant) q.set("quadrant", quadrant);
     return apiFetch<EventList>(`/api/repositories/${encodeURIComponent(safeName)}/events?${q.toString()}`);
   },
   getEvent: (safeName: string, eventId: number) =>
     apiFetch<EventDetail>(`/api/repositories/${encodeURIComponent(safeName)}/events/${eventId}`),
+  getDivergenceSummary: (safeName: string, granularity: string) =>
+    apiFetch<DivergenceSummary>(`/api/repositories/${encodeURIComponent(safeName)}/divergence?granularity=${granularity}`),
+  getPRHeatmap: (safeName: string, granularity: string, bins = 10) =>
+    apiFetch<PRHeatmap>(`/api/repositories/${encodeURIComponent(safeName)}/pr-heatmap?granularity=${granularity}&bins=${bins}`),
+  getCommitDiff: (safeName: string, hash: string) =>
+    apiFetch<CommitDiff>(`/api/repositories/${encodeURIComponent(safeName)}/commits/${encodeURIComponent(hash)}/diff`),
+  explainCommitDiff: (safeName: string, hash: string) =>
+    apiFetch<DiffExplanation>(`/api/repositories/${encodeURIComponent(safeName)}/commits/${encodeURIComponent(hash)}/explain`, {
+      method: "POST",
+    }),
   startPipeline: (repoUrl: string) =>
     apiFetch<{ job_id: string }>("/api/pipeline/run", { method: "POST", body: JSON.stringify({ repo_url: repoUrl }) }),
   getJob: (jobId: string) => apiFetch<Job>(`/api/pipeline/jobs/${jobId}`),

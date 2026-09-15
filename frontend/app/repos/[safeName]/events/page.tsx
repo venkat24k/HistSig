@@ -4,7 +4,18 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import { Badge, BackLink, Panel, Shell } from "../../../components/ui";
-import { api, EventList, EventSummary, GroupThreshold } from "../../../lib/api";
+import {
+  api,
+  DivergenceSummary,
+  EventList,
+  EventSummary,
+  GroupThreshold,
+  PRHeatmap,
+  Quadrant,
+  QUADRANT_DESCRIPTIONS,
+  QUADRANT_LABELS,
+  QUADRANTS,
+} from "../../../lib/api";
 
 const PAGE_SIZE = 25;
 const GROUP_PREVIEW_SIZE = 5;
@@ -36,6 +47,8 @@ export default function EventsListPage({ params }: { params: Promise<{ safeName:
   const rAttentionParam = searchParams.get("r_attention");
   const highP = parseAttention(pAttentionParam);
   const highR = parseAttention(rAttentionParam);
+  const quadrantParam = searchParams.get("quadrant");
+  const quadrant = QUADRANTS.includes(quadrantParam as Quadrant) ? (quadrantParam as Quadrant) : null;
 
   const [data, setData] = useState<EventList | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,10 +64,10 @@ export default function EventsListPage({ params }: { params: Promise<{ safeName:
     if (grouped) return;
     setData(null);
     api
-      .listEvents(safeName, granularity, offset, PAGE_SIZE, eventType, highP, highR)
+      .listEvents(safeName, granularity, offset, PAGE_SIZE, eventType, highP, highR, quadrant)
       .then(setData)
       .catch((err) => setError(String(err)));
-  }, [safeName, granularity, offset, eventType, highP, highR, grouped]);
+  }, [safeName, granularity, offset, eventType, highP, highR, quadrant, grouped]);
 
   const setParam = (updates: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -127,15 +140,38 @@ export default function EventsListPage({ params }: { params: Promise<{ safeName:
               ]}
             />
           </div>
+          <div className="min-w-[210px]">
+            <FilterLabel>Divergence quadrant</FilterLabel>
+            <FilterSelect
+              value={quadrant ?? ""}
+              onChange={(v) => setParam({ quadrant: v || null })}
+              options={[
+                { value: "", label: "All quadrants" },
+                ...QUADRANTS.map((q) => ({ value: q, label: QUADRANT_LABELS[q] })),
+              ]}
+            />
+          </div>
         </div>
       </Panel>
+
+      <DivergenceOverview safeName={safeName} granularity={granularity} selected={quadrant} onSelect={(q) => setParam({ quadrant: q })} />
+
+      <PRHeatmapChart safeName={safeName} granularity={granularity} />
 
       {error && <Panel className="mt-6 px-4 py-3 text-sm text-red">{error}</Panel>}
 
       {grouped ? (
         <div className="mt-6 space-y-7">
           {eventTypes.map((t) => (
-            <EventTypeGroup key={t} safeName={safeName} granularity={granularity} eventType={t} highP={highP} highR={highR} />
+            <EventTypeGroup
+              key={t}
+              safeName={safeName}
+              granularity={granularity}
+              eventType={t}
+              highP={highP}
+              highR={highR}
+              quadrant={quadrant}
+            />
           ))}
         </div>
       ) : (
@@ -203,12 +239,14 @@ function EventTypeGroup({
   eventType,
   highP,
   highR,
+  quadrant,
 }: {
   safeName: string;
   granularity: string;
   eventType: string;
   highP: boolean | null;
   highR: boolean | null;
+  quadrant: Quadrant | null;
 }) {
   const [data, setData] = useState<EventList | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -216,16 +254,17 @@ function EventTypeGroup({
   useEffect(() => {
     setData(null);
     api
-      .listEvents(safeName, granularity, 0, GROUP_PREVIEW_SIZE, eventType, highP, highR)
+      .listEvents(safeName, granularity, 0, GROUP_PREVIEW_SIZE, eventType, highP, highR, quadrant)
       .then(setData)
       .catch((err) => setError(String(err)));
-  }, [safeName, granularity, eventType, highP, highR]);
+  }, [safeName, granularity, eventType, highP, highR, quadrant]);
 
   const pThreshold = data?.p_thresholds[eventType];
   const rThreshold = data?.r_thresholds[eventType];
   const viewAllParams = new URLSearchParams({ granularity, event_type: eventType });
   if (highP !== null) viewAllParams.set("p_attention", highP ? "high" : "rest");
   if (highR !== null) viewAllParams.set("r_attention", highR ? "high" : "rest");
+  if (quadrant) viewAllParams.set("quadrant", quadrant);
   const viewAllHref = `/repos/${safeName}/events?${viewAllParams.toString()}`;
 
   return (
@@ -273,6 +312,210 @@ function EventTypeGroup({
   );
 }
 
+function DivergenceOverview({
+  safeName,
+  granularity,
+  selected,
+  onSelect,
+}: {
+  safeName: string;
+  granularity: string;
+  selected: Quadrant | null;
+  onSelect: (quadrant: Quadrant | null) => void;
+}) {
+  const [summary, setSummary] = useState<DivergenceSummary | null>(null);
+
+  useEffect(() => {
+    setSummary(null);
+    api.getDivergenceSummary(safeName, granularity).then(setSummary).catch(() => setSummary(null));
+  }, [safeName, granularity]);
+
+  const total = summary ? Object.values(summary.counts).reduce((a, b) => a + b, 0) : 0;
+  if (summary && total === 0) return null;
+
+  return (
+    <div className="mt-4">
+      <div className="mb-2 flex items-baseline justify-between">
+        <FilterLabel>Divergence — Perceived Significance × Historical Salience</FilterLabel>
+        {selected && (
+          <button onClick={() => onSelect(null)} className="text-[11px] text-indigo hover:underline">
+            clear selection
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {QUADRANTS.map((q) => (
+          <button key={q} onClick={() => onSelect(selected === q ? null : q)} className="text-left">
+            <Panel
+              hover
+              className={`px-3.5 py-3 transition ${selected === q ? "ring-2 ring-indigo/40 border-indigo/40" : ""}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <Badge tone={q}>{QUADRANT_LABELS[q]}</Badge>
+              </div>
+              <div className="mt-2 text-xl font-semibold tabular-nums text-fg">
+                {summary ? summary.counts[q].toLocaleString() : "…"}
+              </div>
+              <p className="mt-1 text-[11px] leading-snug text-fg-faint">{QUADRANT_DESCRIPTIONS[q]}</p>
+            </Panel>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Sequential single-hue ramp (blue, light -> dark), 3 key stops taken
+// directly from the design system's documented sequential palette --
+// continuous colors are linearly interpolated between adjacent stops
+// rather than stepped, since a heatmap encodes a continuous magnitude,
+// not a small set of ordinal buckets.
+const HEAT_RAMP: [number, [number, number, number]][] = [
+  [0, [0xcd, 0xe2, 0xfb]],
+  [0.5, [0x39, 0x87, 0xe5]],
+  [1, [0x0d, 0x36, 0x6b]],
+];
+
+function heatColor(t: number): string {
+  const clamped = Math.max(0, Math.min(1, t));
+  const i = clamped <= 0.5 ? 0 : 1;
+  const [t0, c0] = HEAT_RAMP[i];
+  const [t1, c1] = HEAT_RAMP[i + 1];
+  const local = (clamped - t0) / (t1 - t0);
+  const rgb = c0.map((v, k) => Math.round(v + (c1[k] - v) * local));
+  return `rgb(${rgb.join(", ")})`;
+}
+
+function PRHeatmapChart({ safeName, granularity }: { safeName: string; granularity: string }) {
+  const [data, setData] = useState<PRHeatmap | null>(null);
+  const [hovered, setHovered] = useState<{ p_bin: number; r_bin: number; count: number } | null>(null);
+  const [showTable, setShowTable] = useState(false);
+
+  useEffect(() => {
+    setData(null);
+    setHovered(null);
+    api
+      .getPRHeatmap(safeName, granularity, 10)
+      .then(setData)
+      .catch(() => setData({ granularity, bins: 10, total: 0, cells: [] }));
+  }, [safeName, granularity]);
+
+  if (data && data.total === 0) return null;
+
+  const bins = data?.bins ?? 10;
+  const maxCount = data ? Math.max(1, ...data.cells.map((c) => c.count)) : 1;
+  const cellByPos = new Map((data?.cells ?? []).map((c) => [`${c.p_bin}-${c.r_bin}`, c.count]));
+  const binLabel = (bin: number) => `${(bin / bins).toFixed(1)}–${((bin + 1) / bins).toFixed(1)}`;
+  const rowOrder = Array.from({ length: bins }, (_, i) => bins - 1 - i); // R high (top) -> low (bottom)
+  const colOrder = Array.from({ length: bins }, (_, i) => i); // P low (left) -> high (right)
+  const cellPx = 22;
+
+  return (
+    <div className="mt-6">
+      <div className="mb-2 flex items-baseline justify-between">
+        <FilterLabel>P / R concentration heatmap</FilterLabel>
+        {data && data.total > 0 && (
+          <button onClick={() => setShowTable((v) => !v)} className="text-[11px] text-indigo hover:underline">
+            {showTable ? "Show as chart" : "Show as table"}
+          </button>
+        )}
+      </div>
+      <Panel className="px-5 py-4">
+        {!data && <div className="h-64 panel sheen" />}
+        {data && (
+          <>
+            <p className="mb-3 min-h-[14px] text-[11px] text-fg-faint">
+              {hovered
+                ? `P ${binLabel(hovered.p_bin)} × R ${binLabel(hovered.r_bin)} — ${hovered.count.toLocaleString()} event${hovered.count === 1 ? "" : "s"}`
+                : `${data.total.toLocaleString()} events scored on both axes — hover a cell for its exact P/R range and count`}
+            </p>
+
+            {!showTable ? (
+              <div className="flex gap-2.5 overflow-x-auto pb-1">
+                <div className="flex shrink-0 flex-col items-center justify-between py-0.5 text-[10px] text-fg-faint">
+                  <span>1.0</span>
+                  <span className="whitespace-nowrap [writing-mode:vertical-rl] rotate-180 tracking-wide">
+                    Historical Salience (R)
+                  </span>
+                  <span>0.0</span>
+                </div>
+                <div className="shrink-0">
+                  <div className="inline-grid gap-[2px]" style={{ gridTemplateColumns: `repeat(${bins}, ${cellPx}px)` }}>
+                    {rowOrder.map((r) =>
+                      colOrder.map((p) => {
+                        const count = cellByPos.get(`${p}-${r}`) ?? 0;
+                        const t = count === 0 ? 0 : Math.log1p(count) / Math.log1p(maxCount);
+                        return (
+                          <div
+                            key={`${p}-${r}`}
+                            title={`P ${binLabel(p)} × R ${binLabel(r)}: ${count} events`}
+                            onMouseEnter={() => setHovered({ p_bin: p, r_bin: r, count })}
+                            onMouseLeave={() => setHovered(null)}
+                            className="rounded-[3px] transition hover:ring-2 hover:ring-indigo/50"
+                            style={{
+                              width: cellPx, height: cellPx,
+                              background: count === 0 ? "var(--color-surface-alt)" : heatColor(t),
+                            }}
+                          />
+                        );
+                      })
+                    )}
+                  </div>
+                  <div
+                    className="mt-1.5 flex justify-between text-[10px] text-fg-faint"
+                    style={{ width: bins * cellPx + (bins - 1) * 2 }}
+                  >
+                    <span>0.0</span>
+                    <span>Perceived Significance (P)</span>
+                    <span>1.0</span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-[11px]">
+                  <thead>
+                    <tr>
+                      <th className="px-2 py-1 text-left font-medium text-fg-faint">R \ P</th>
+                      {colOrder.map((p) => (
+                        <th key={p} className="px-2 py-1 text-right font-mono font-normal text-fg-faint">
+                          {binLabel(p)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rowOrder.map((r) => (
+                      <tr key={r} className="border-t border-line-soft">
+                        <td className="px-2 py-1 font-mono text-fg-faint">{binLabel(r)}</td>
+                        {colOrder.map((p) => (
+                          <td key={p} className="px-2 py-1 text-right font-mono tabular-nums text-fg-dim">
+                            {(cellByPos.get(`${p}-${r}`) ?? 0).toLocaleString()}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="mt-3.5 flex items-center gap-2 text-[10px] text-fg-faint">
+              <span>Fewer</span>
+              <div
+                className="h-2 w-full max-w-[160px] rounded-full"
+                style={{ background: `linear-gradient(to right, ${heatColor(0)}, ${heatColor(0.5)}, ${heatColor(1)})` }}
+              />
+              <span>More</span>
+              <span className="ml-1">(log scale — a few cells otherwise dwarf the rest)</span>
+            </div>
+          </>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function ThresholdNote({
   axis,
   label,
@@ -308,6 +551,7 @@ function EventRow({ event, safeName, delay }: { event: EventSummary; safeName: s
             <Badge tone={event.event_type}>{event.event_type.replace("_", " ")}</Badge>
             {event.p_score?.is_high_p && <Badge tone="high-p">high P</Badge>}
             {event.r_score?.is_high_r && <Badge tone="high-r">high R</Badge>}
+            {event.divergence && <Badge tone={event.divergence.quadrant}>{QUADRANT_LABELS[event.divergence.quadrant]}</Badge>}
             {event.source_pr_number !== null && <span className="font-mono">#{event.source_pr_number}</span>}
             {event.primary_commit_hash && <span className="font-mono">{event.primary_commit_hash.slice(0, 8)}</span>}
             {event.author?.github_login && (
