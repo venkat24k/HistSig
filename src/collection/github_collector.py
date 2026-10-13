@@ -110,10 +110,22 @@ def _send_request(session: requests.Session, method: str, url: str, *, params=No
             remaining = resp.headers.get("X-RateLimit-Remaining")
             reset_at = resp.headers.get("X-RateLimit-Reset")
             if retry_after:
-                time.sleep(int(retry_after) + 1)
+                # Capped the same way as the primary-rate-limit branch below --
+                # an earlier version trusted this server-supplied header with no
+                # upper bound at all, which silently stalled a real collection
+                # run for 30+ minutes with zero visibility (no crash, no log,
+                # just a thread asleep) when GitHub's secondary abuse-detection
+                # returned an unexpectedly large value during a burst of large
+                # queries against pytest-dev/pytest.
+                wait = min(int(retry_after) + 1, 3600)
+                if wait > 30:
+                    print(f"[github_collector] {resp.status_code} on {url}: sleeping {wait}s (Retry-After)")
+                time.sleep(wait)
             elif remaining == "0" and reset_at:
-                wait = max(int(reset_at) - time.time(), 1) + 2
-                time.sleep(min(wait, 3600))
+                wait = min(max(int(reset_at) - time.time(), 1) + 2, 3600)
+                if wait > 30:
+                    print(f"[github_collector] primary rate limit exhausted on {url}: sleeping {wait}s")
+                time.sleep(wait)
             else:
                 time.sleep(min(2**attempt, 30))
             continue
@@ -128,23 +140,64 @@ def _request(session: requests.Session, url: str, params: dict | None = None) ->
     return _send_request(session, "GET", url, params=params)
 
 
+class GraphQLComplexityExceeded(RuntimeError):
+    """Raised when GitHub's GraphQL query-complexity budget is exceeded
+    (`errors[*].type == "RESOURCE_LIMITS_EXCEEDED"`). Unlike RATE_LIMITED or
+    a transient backend fault, this is deterministic given the same query
+    and variables -- retrying unchanged would fail identically every time
+    (confirmed live: pytest-dev/pytest's PR query overflowed the budget on
+    every node in the page, not one pathological PR, meaning the *page* was
+    too large, not any single item in it). A distinct exception from the
+    generic transient-error RuntimeError so `_graphql_paginate` can catch
+    it specifically and shrink the page size instead of looping forever."""
+
+
 def _graphql(session: requests.Session, query: str, variables: dict, max_retries: int = 6) -> dict:
     """GitHub signals GraphQL rate/complexity-limit exhaustion inside an HTTP
     200 response (`errors: [{"type": "RATE_LIMITED", ...}]`, `data: null`),
     not via a 403/429 status — so that case is handled here, on top of
     `_send_request`'s transport-level retries, rather than being missed
-    entirely. Any other GraphQL error (bad owner/repo, revoked access, etc.)
-    raises immediately with the actual error detail, instead of returning a
-    partial `data` dict (e.g. `{"repository": None}`) that would otherwise
-    fail confusingly deep inside pagination.
+    entirely. GitHub's own transient internal-engine faults ("Something went
+    wrong while executing your query ...") are signaled the same way but
+    *without* a `type` key at all (confirmed against a live failing query on
+    octocat/Spoon-Knife, a repo with an unusually large PR/issue count) —
+    every documented application-level GraphQL error (NOT_FOUND, FORBIDDEN,
+    etc.) always carries a `type`, so "no type key" is a safe, specific
+    signal for "GitHub's backend faulted, retry," not a catch-all.
+    RESOURCE_LIMITS_EXCEEDED raises GraphQLComplexityExceeded immediately
+    (see its docstring -- retrying here would be pointless). Any other
+    GraphQL error (bad owner/repo, revoked access, etc.) still raises a
+    plain RuntimeError immediately with the actual error detail, instead of
+    returning a partial `data` dict (e.g. `{"repository": None}`) that would
+    otherwise fail confusingly deep inside pagination.
+
+    A real live run against pytest-dev/pytest (dense per-PR review/commit
+    history) also surfaced a response that was HTTP 200 (so `_send_request`
+    treated it as a normal success) but had a completely empty/invalid
+    body -- `resp.json()` raising a raw JSONDecodeError with no retry at
+    all, crashing the whole collection run on what was almost certainly a
+    transient proxy/CDN glitch, not a real application error. That's
+    handled here the same way as any other transient condition: retried
+    with backoff, not a fatal parse crash.
     """
     for attempt in range(max_retries):
         resp = _send_request(session, "POST", GRAPHQL_URL, json={"query": query, "variables": variables})
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except requests.exceptions.JSONDecodeError:
+            if attempt == max_retries - 1:
+                raise RuntimeError(
+                    f"GitHub returned a non-JSON response (HTTP {resp.status_code}) after {max_retries} attempts: "
+                    f"{resp.text[:200]!r}"
+                )
+            time.sleep(min(5 * 2**attempt, 60))
+            continue
         errors = payload.get("errors")
         if errors:
-            is_rate_limited = any(e.get("type") == "RATE_LIMITED" for e in errors)
-            if is_rate_limited and attempt < max_retries - 1:
+            if any(e.get("type") == "RESOURCE_LIMITS_EXCEEDED" for e in errors):
+                raise GraphQLComplexityExceeded(f"GitHub GraphQL complexity limit exceeded: {errors}")
+            is_transient = all(e.get("type") in ("RATE_LIMITED", None) for e in errors)
+            if is_transient and attempt < max_retries - 1:
                 time.sleep(min(5 * 2**attempt, 60))
                 continue
             raise RuntimeError(f"GitHub GraphQL error: {errors}")
@@ -152,10 +205,36 @@ def _graphql(session: requests.Session, query: str, variables: dict, max_retries
     raise AssertionError("unreachable: loop above always returns or raises on its last iteration")
 
 
-def _graphql_paginate(session: requests.Session, query: str, variables: dict, connection_path: tuple[str, ...]):
+def _graphql_paginate(
+    session: requests.Session, query: str, variables: dict, connection_path: tuple[str, ...],
+    page_size_key: str = "pageSize", min_page_size: int = 1,
+):
+    """Paginates a GraphQL connection. On GraphQLComplexityExceeded, halves
+    `variables[page_size_key]` and retries the *same* cursor position (no
+    items skipped) rather than giving up -- a page that was too complex at
+    the original size usually succeeds at half, since the overflow comes
+    from the page's total nested node count, not one outlier item (see
+    GraphQLComplexityExceeded's docstring). Once a page succeeds, later
+    pages keep using the smaller size rather than growing back -- a repo
+    dense enough to overflow once is likely dense throughout, and silently
+    growing back would just risk re-discovering the same overflow.
+    `variables` is copied, not mutated, so shrinking one connection's pages
+    doesn't affect the caller's own dict or any other paginate call reusing
+    it. All three current callers (`collect_issues`/`collect_pull_requests`/
+    `collect_releases`) name their outer page-size variable "pageSize", so
+    the default needs no per-caller wiring.
+    """
+    variables = dict(variables)
     cursor = None
     while True:
-        data = _graphql(session, query, {**variables, "cursor": cursor})
+        try:
+            data = _graphql(session, query, {**variables, "cursor": cursor})
+        except GraphQLComplexityExceeded:
+            shrunk = max(variables[page_size_key] // 2, min_page_size)
+            if shrunk == variables[page_size_key]:
+                raise  # already at the floor -- can't shrink further, genuinely stuck
+            variables[page_size_key] = shrunk
+            continue
         connection = data
         for key in connection_path:
             connection = connection[key]

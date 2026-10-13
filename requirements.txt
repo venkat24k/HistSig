@@ -11,7 +11,9 @@ httpx>=0.27  # FastAPI's TestClient
 fastapi>=0.110
 uvicorn[standard]>=0.29
 
+# Stage 8 — Neo4j knowledge graph
+neo4j>=5.0
+
 # Added in later stages as needed (Pandas/NumPy for feature extraction,
-# SciPy/scikit-learn/statsmodels for evaluation, neo4j-driver for the
-# graph stage) — not installed yet per CLAUDE.md: no dependency without
-# a current, concrete reason.
+# SciPy/scikit-learn/statsmodels for evaluation) — not installed yet per
+# CLAUDE.md: no dependency without a current, concrete reason.

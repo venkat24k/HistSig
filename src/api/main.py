@@ -18,7 +18,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from src.api import jobs, repositories
+from src.api import graph, jobs, repositories
 from src.collection.github_collector import parse_owner_repo
 
 load_dotenv()
@@ -146,6 +146,18 @@ def get_pr_heatmap(safe_name: str, granularity: str = "pr_bundle", bins: int = 1
         return repositories.get_pr_heatmap(safe_name, granularity, bins)
     except repositories.RepositoryNotFound as exc:
         raise HTTPException(404, str(exc))
+
+
+@app.get("/api/repositories/{safe_name}/graph")
+def get_repo_graph(safe_name: str, only_scored: bool = True, limit: int = 1500):
+    """Stage 8 knowledge graph (iteration 1) -- nodes/edges for the
+    frontend's Cytoscape.js view, read from Neo4j, not SQLite."""
+    if not (1 <= limit <= 5000):
+        raise HTTPException(400, "limit must be between 1 and 5000")
+    try:
+        return graph.get_repo_graph(safe_name, only_scored=only_scored, limit=limit)
+    except graph.GraphNotConfigured as exc:
+        raise HTTPException(503, str(exc))
 
 
 @app.get("/api/repositories/{safe_name}/commits/{commit_hash}/diff")

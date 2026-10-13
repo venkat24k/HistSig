@@ -1201,6 +1201,38 @@ unless the user reopens them — don't silently redo or second-guess them.
 Things that cost real debugging time once; check here before re-deriving
 them from scratch.
 
+- **A processed-schema fix doesn't retroactively apply to a repo's
+  existing `data/processed/<repo>.db` file — this bit the team a second
+  time, from the other direction, right after Section 34's `later_references_count`
+  bug taught the same lesson about raw schema.** A collaborator fixed a
+  real bug in `src/processing/schema.py`: `file_path_history`'s primary
+  key was `(repo_id, commit_hash, path)`, which raises
+  `sqlite3.IntegrityError: UNIQUE constraint failed` on a commit that
+  both deletes and re-adds the same path (two different file identities
+  legitimately touching the same `(commit, path)` — hit on
+  `Homebrew/BrewUI`'s real history). Fix: widen the key to
+  `(repo_id, commit_hash, path, file_id)`. Pulling that fix and
+  restarting both servers was **not enough** — every repo analyzed before
+  the fix landed still has a `data/processed/<repo>.db` file with the old
+  narrower key baked in (`CREATE TABLE IF NOT EXISTS` never alters an
+  existing table), so re-running `normalize` against any of them would
+  still hit the same crash the fix was supposed to eliminate, exactly
+  like a stale raw schema would. **Resolved for every repo on this
+  machine** by deleting every `data/processed/*.db` (never `data/raw/`)
+  and rebuilding from the already-collected raw data via
+  `run_full_pipeline(..., stages=non-collect)` — verified clean across 9
+  repos including `pallets/streamlit` (26,759 divergence-classified
+  events, by far the largest and most varied real history collected in
+  this project), which also served as a real-data audit of every other
+  `PRIMARY KEY`/`UNIQUE` constraint in the schema (`src/collection/schema.py`,
+  `src/processing/schema.py`, `src/events/schema.py`) for the same class
+  of "two legitimate real rows collide under this key" risk — none
+  surfaced. **Standing rule, not just for this one incident: after
+  pulling or making any change to a `CREATE TABLE` statement in
+  `src/*/schema.py`, check whether any `data/processed/*.db` (or
+  `data/raw/*.db` for a raw-schema change) predates it, and rebuild those
+  specifically — restarting the servers alone is never sufficient for a
+  schema change, only for a Python logic change.**
 - **Windows' 260-character MAX_PATH breaks `git clone` on real repositories
   with long file paths** (confirmed against `pallets/streamlit`'s own
   `e2e_playwright/__snapshots__/...` test-snapshot filenames). Git clones

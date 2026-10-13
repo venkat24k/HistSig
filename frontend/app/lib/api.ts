@@ -112,6 +112,22 @@ export type DiffExplanation = { explanation: string };
 export type HeatmapCell = { p_bin: number; r_bin: number; count: number };
 export type PRHeatmap = { granularity: string; bins: number; total: number; cells: HeatmapCell[] };
 
+export type GraphNode = {
+  id: string;
+  type: "HistoricalEvent" | "Developer" | "File";
+  label: string;
+  event_type?: string | null;
+  quadrant?: Quadrant | null;
+  p_score?: number | null;
+  r_score?: number | null;
+  is_high_p?: boolean | null;
+  is_high_r?: boolean | null;
+  occurred_at?: string | null;
+  is_bot?: boolean | null;
+};
+export type GraphEdge = { id: string; source: string; target: string; type: "AUTHORED" | "MODIFIES" };
+export type RepoGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
+
 export type JobLogEntry = { stage: string; at: string; [key: string]: unknown };
 
 export type Job = {
@@ -179,6 +195,8 @@ export const api = {
     apiFetch<DiffExplanation>(`/api/repositories/${encodeURIComponent(safeName)}/commits/${encodeURIComponent(hash)}/explain`, {
       method: "POST",
     }),
+  getRepoGraph: (safeName: string, onlyScored = true) =>
+    apiFetch<RepoGraph>(`/api/repositories/${encodeURIComponent(safeName)}/graph?only_scored=${onlyScored}`),
   startPipeline: (repoUrl: string) =>
     apiFetch<{ job_id: string }>("/api/pipeline/run", { method: "POST", body: JSON.stringify({ repo_url: repoUrl }) }),
   getJob: (jobId: string) => apiFetch<Job>(`/api/pipeline/jobs/${jobId}`),

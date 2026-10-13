@@ -15,6 +15,7 @@ data/raw/**/*.json
 data/raw/_clones/
 data/processed/**
 data/results/**
+data/neo4j/
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/results/.gitkeep

@@ -83,6 +83,14 @@ export default function RepoDetailPage({ params }: { params: Promise<{ safeName:
                 </p>
               </Panel>
             </Link>
+            <Link href={`/repos/${safeName}/graph`} className="sm:col-span-2">
+              <Panel hover className="h-full px-5 py-4">
+                <div className="text-sm font-semibold text-green">Explore knowledge graph →</div>
+                <p className="mt-1.5 text-xs leading-relaxed text-fg-faint">
+                  Developers, events, and the files they touched, as an interactive graph (Neo4j + Cytoscape.js) — iteration 1, not yet the full ontology.
+                </p>
+              </Panel>
+            </Link>
           </div>
         </div>
       )}

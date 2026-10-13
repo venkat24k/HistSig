@@ -16,6 +16,7 @@ whichever repos happened to have `scripts/extract_features.py` etc. run
 against them by hand had P data at all (see CLAUDE.md Section 34).
 """
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
@@ -57,12 +58,12 @@ def default_db_paths(owner_repo: str, data_dir: str = "data") -> tuple[str, str]
 
 DEFAULT_STAGES = (
     "collect", "normalize", "events",
-    "p_features", "r_features", "p_scores", "r_scores", "divergence",
+    "p_features", "r_features", "p_scores", "r_scores", "divergence", "graph",
 )
 
 # Stages that read/write the processed database — any of these requires
 # processed_db_path.
-_PROCESSED_STAGES = {"normalize", "events", "p_features", "r_features", "p_scores", "r_scores", "divergence"}
+_PROCESSED_STAGES = {"normalize", "events", "p_features", "r_features", "p_scores", "r_scores", "divergence", "graph"}
 
 
 def run_full_pipeline(
@@ -101,11 +102,24 @@ def run_full_pipeline(
         local_path = ensure_local_clone(repo_meta["clone_url"], str(clone_dir))
 
         progress("collecting")
+        # Each HTTP collector gets its own requests.Session rather than sharing
+        # `session` across threads -- a real run against pytest-dev/pytest (the
+        # largest, longest-running repo this pipeline has collected) stalled
+        # silently and indefinitely with zero network activity and no error,
+        # while the exact same collectors run sequentially against a *fresh*
+        # session in isolation (outside this ThreadPoolExecutor) completed
+        # cleanly. `requests.Session`/urllib3 connection-pool sharing across
+        # concurrent threads is a known source of exactly this kind of silent
+        # hang (a thread can block waiting to acquire a pooled connection with
+        # no timeout of its own, separate from the per-request `timeout=30`
+        # which only covers time *after* a connection is acquired) -- giving
+        # each collector its own session removes the sharing entirely rather
+        # than trying to prove which specific interaction caused it.
         collectors = {
             "commits": lambda: collect_git_history(local_path, only_in_branch=branch),
-            "issues": lambda: collect_issues(session, owner_repo),
-            "pull_requests": lambda: collect_pull_requests(session, owner_repo),
-            "releases": lambda: collect_releases(session, owner_repo),
+            "issues": lambda: collect_issues(get_session(token), owner_repo),
+            "pull_requests": lambda: collect_pull_requests(get_session(token), owner_repo),
+            "releases": lambda: collect_releases(get_session(token), owner_repo),
         }
         with ThreadPoolExecutor(max_workers=len(collectors)) as pool:
             futures = {name: pool.submit(fn) for name, fn in collectors.items()}
@@ -184,6 +198,41 @@ def run_full_pipeline(
         insert_divergence(processed_conn, repo_id, divergence_result["rows"])
         progress("classified_divergence", **divergence_result["summary"])
         result["divergence"] = divergence_result["summary"]
+
+    if "graph" in stages:
+        # Neo4j is supplementary demo-app infrastructure, not part of the
+        # core research pipeline (CLAUDE.md Section 8: the research engine
+        # must stay runnable with no UI/graph involved) -- so a missing or
+        # unreachable Neo4j instance skips this stage with a clear log
+        # entry instead of failing collection/scoring for every caller who
+        # hasn't set it up, the same "optional, never a hard dependency"
+        # treatment Section 9 already requires for the LLM layer.
+        progress("loading_graph")
+        neo4j_uri = os.environ.get("NEO4J_URI")
+        neo4j_user = os.environ.get("NEO4J_USERNAME")
+        neo4j_password = os.environ.get("NEO4J_PASSWORD")
+        if not (neo4j_uri and neo4j_user and neo4j_password):
+            progress("graph_skipped", reason="NEO4J_URI/NEO4J_USERNAME/NEO4J_PASSWORD not configured")
+        else:
+            try:
+                from neo4j import GraphDatabase
+
+                from src.graph.build import load_repo as load_graph_repo
+                from src.graph.schema import clear_repo as clear_graph_repo
+                from src.graph.schema import create_schema as create_graph_schema
+
+                safe_name = owner_repo.replace("/", "__")
+                driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+                try:
+                    create_graph_schema(driver)
+                    clear_graph_repo(driver, safe_name)
+                    graph_summary = load_graph_repo(driver, processed_conn, safe_name)
+                finally:
+                    driver.close()
+                progress("loaded_graph", **graph_summary)
+                result["graph"] = graph_summary
+            except Exception as exc:  # noqa: BLE001 -- deliberately broad: any Neo4j/driver failure here must not take down the rest of the pipeline
+                progress("graph_skipped", reason=str(exc))
 
     progress("done")
     return result
