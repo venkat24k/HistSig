@@ -1,4 +1,4 @@
-"""FastAPI backend for Digital Ghost's demo frontend.
+"""FastAPI backend for HistSig's demo frontend.
 
 Run with: uvicorn src.api.main:app --reload --port 8000
 
@@ -23,7 +23,7 @@ from src.collection.github_collector import parse_owner_repo
 
 load_dotenv()
 
-app = FastAPI(title="Digital Ghost API")
+app = FastAPI(title="HistSig API")
 
 # Both hostnames are allowed since "localhost" vs "127.0.0.1" resolution
 # is inconsistent across browsers/OSes for local dev — this app is never

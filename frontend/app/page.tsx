@@ -93,7 +93,7 @@ export default function HomePage() {
 
             <p className="rise mt-5 max-w-lg text-[15px] leading-relaxed text-fg-dim" style={{ animationDelay: "140ms" }}>
               Repository interfaces show history in the order it happened, with every commit weighted the
-              same. Digital Ghost mines the full record — commits, issues, pull requests, reviews, releases —
+              same. HistSig mines the full record — commits, issues, pull requests, reviews, releases —
               and ranks it into candidate historical events worth your attention.
             </p>
 

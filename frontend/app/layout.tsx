@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Digital Ghost",
+  title: "HistSig",
   description: "Browse candidate historical events mined from a GitHub repository's history.",
 };
 
@@ -32,7 +32,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 <span className="absolute inline-flex h-full w-full rounded-full bg-indigo opacity-60 group-hover:animate-ping" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo" />
               </span>
-              <span className="text-sm font-semibold tracking-tight">Digital Ghost</span>
+              <span className="text-sm font-semibold tracking-tight">HistSig</span>
               <span className="text-[10px] tracking-[0.16em] text-fg-faint uppercase border border-line rounded px-1.5 py-0.5">
                 HistSig
               </span>

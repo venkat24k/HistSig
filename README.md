@@ -1,4 +1,4 @@
-# Digital Ghost / HistSig
+# HistSig / HistSig
 
 Research project assessing historical significance in software evolution.
 See [CLAUDE.md](CLAUDE.md) for the full project constitution — research

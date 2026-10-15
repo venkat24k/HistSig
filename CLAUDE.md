@@ -1,4 +1,4 @@
-# CLAUDE.md — Digital Ghost / HistSig Project Constitution
+# CLAUDE.md — HistSig / HistSig Project Constitution
 
 This file is the long-term governing document for this repository. It applies to
 every future Claude Code session working here. When instructions elsewhere
@@ -13,7 +13,7 @@ define the priority order that governs every other decision in this document.
 
 ## 1. Project Identity
 
-- **Project name:** Digital Ghost
+- **Project name:** HistSig
 - **Research framework:** HistSig
 - **Research topic:** "Assessing Historical Significance in Software Evolution:
   A Feature-Based Ranking Framework for Identifying Pivotal Repository Events"
@@ -121,7 +121,7 @@ Section 25.
 ## 5. Research-First Principle
 
 **The most important component of this project is the HistSig research
-methodology and its empirical validation.** Digital Ghost is the
+methodology and its empirical validation.** HistSig is the
 demonstration platform built around that research — not the other way around.
 
 **Do:**
@@ -167,7 +167,7 @@ paper itself.
 
 ## 7. Knowledge Graph Role
 
-Neo4j is part of the Digital Ghost architecture, representing relationships
+Neo4j is part of the HistSig architecture, representing relationships
 between entities such as: `Developer`, `Commit`, `File`, `Issue`,
 `PullRequest`, `Review`, `Release`, `Module`, `HistoricalEvent`.
 
@@ -188,9 +188,9 @@ initially — start minimal and extend only when a concrete query need arises.
 
 ---
 
-## 8. Digital Ghost Role
+## 8. HistSig Role
 
-Digital Ghost is the platform that demonstrates HistSig. Eventually it should
+HistSig is the platform that demonstrates HistSig. Eventually it should
 let a user:
 
 1. Enter a repository URL
@@ -546,7 +546,7 @@ order:
 4. Implement and test HistSig scoring.
 5. Evaluate HistSig.
 
-Only after the research core works should the complete Digital Ghost
+Only after the research core works should the complete HistSig
 experience be built.
 
 ---
@@ -588,7 +588,7 @@ Always keep separate:
 **Research contribution (HistSig):** feature-based historical event ranking,
 P/R separation, divergence analysis, empirical validation.
 
-**Supporting infrastructure (Digital Ghost):** repository collection,
+**Supporting infrastructure (HistSig):** repository collection,
 storage, Neo4j, graph visualization, dashboard, evidence retrieval, optional
 LLM.
 
